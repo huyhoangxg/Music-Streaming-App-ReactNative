@@ -1,0 +1,4 @@
+streaming-app-backend/node_modules/
+streaming-app-backend/src/generated/prisma
+streaming-app-backend/.env
+.history/
