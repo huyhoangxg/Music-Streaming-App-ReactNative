@@ -1,0 +1,135 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+
+model User {
+  id           String    @id @default(uuid())
+  username     String    @unique
+  email        String    @unique
+  passwordHash String
+  fullName     String?
+  dateOfBirth  DateTime?
+  country      String?
+  avatarUrl    String?
+  bio          String?
+  isPrivate    Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+
+  // Mối quan hệ (1 User có nhiều...)
+  songs          Song[]
+  playlists      Playlist[]
+  comments       Comment[]
+  likes          Like[]
+  
+  // Mạng xã hội (Follow)
+  followers      Follow[] @relation("UserFollowers")
+  following      Follow[] @relation("UserFollowing")
+
+  // Thông báo
+  receivedNotis  Notification[] @relation("ReceivedNotis")
+  triggeredNotis Notification[] @relation("TriggeredNotis")
+}
+
+model Genre {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  songs Song[]
+}
+
+
+model Song {
+  id         String   @id @default(uuid())
+  title      String
+  fileUrl    String
+  imageUrl   String?
+  duration   Int?
+  playCount  Int      @default(0)
+  privacy    String   @default("Public") 
+  createdAt  DateTime @default(now())
+
+  // Khóa ngoại
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  genreId    Int?
+  genre      Genre?   @relation(fields: [genreId], references: [id], onDelete: SetNull)
+
+  // Mối quan hệ
+  comments       Comment[]
+  likes          Like[]
+  playlistSongs  PlaylistSong[]
+}
+
+model Playlist {
+  id         String   @id @default(uuid())
+  title      String
+  privacy    String   @default("Public")
+  createdAt  DateTime @default(now())
+
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  playlistSongs PlaylistSong[]
+}
+
+
+model PlaylistSong {
+  id         Int      @id @default(autoincrement())
+  addedAt    DateTime @default(now())
+  orderIndex Int?
+
+  playlistId String
+  playlist   Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  songId     String
+  song       Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+}
+
+model Comment {
+  id        Int      @id @default(autoincrement())
+  content   String
+  createdAt DateTime @default(now())
+
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  songId    String
+  song      Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+}
+
+model Like {
+  createdAt DateTime @default(now())
+
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  songId    String
+  song      Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@id([userId, songId]) // Khóa chính kép
+}
+
+model Follow {
+  createdAt  DateTime @default(now())
+
+  followerId String
+  follower   User     @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+  followedId String
+  followed   User     @relation("UserFollowers", fields: [followedId], references: [id], onDelete: Cascade)
+
+  @@id([followerId, followedId]) // Khóa chính kép
+}
+
+model Notification {
+  id          Int      @id @default(autoincrement())
+  type        String   
+  referenceId String?
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  userId      String
+  user        User     @relation("ReceivedNotis", fields: [userId], references: [id], onDelete: Cascade)
+  actorId     String
+  actor       User     @relation("TriggeredNotis", fields: [actorId], references: [id], onDelete: Cascade)
+}
