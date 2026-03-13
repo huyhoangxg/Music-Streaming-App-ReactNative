@@ -52,7 +52,7 @@ export const followUser = async (req: AuthRequest, res: Response): Promise<void>
         data: {
           userId: followedId,
           actorId: followerId,
-          type: targetUser.isPrivate ? 'FOLLOW_REQUEST' : 'NEW_FOLLOWER',
+          type: targetUser.isPrivate ? 'FOLLOW_REQUEST' : 'FOLLOW',
         }
       });
     });
@@ -98,7 +98,7 @@ export const acceptFollowRequest = async (req: AuthRequest, res: Response): Prom
         data: {
           userId: followerId, 
           actorId: myId,
-          type: 'FOLLOW_ACCEPTED',
+          type: 'FOLLOW',
         }
       });
     });

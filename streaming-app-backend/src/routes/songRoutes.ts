@@ -3,7 +3,7 @@ import {
   uploadSong, 
   getPublicSongs, 
   getSongById, 
-  incrementPlayCount 
+  trackPlay 
 } from '../controllers/songController';
 import { authenticateToken, optionalAuthenticateToken } from '../middlewares/authMiddleware';
 
@@ -23,7 +23,7 @@ router.get('/:songId', optionalAuthenticateToken, getSongById);
 
 // Tăng lượt nghe (Play Count)
 // POST /api/songs/:songId/play
-router.post('/:songId/play', incrementPlayCount);
+router.post('/:songId/play', trackPlay);
 
 
 // ==========================================

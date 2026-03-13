@@ -18,7 +18,7 @@ export const createPlaylist = async (req: AuthRequest, res: Response): Promise<v
     const newPlaylist = await prisma.playlist.create({
       data: {
         title,
-        privacy: privacy || 'Public',
+        privacy: privacy || 'PUBLIC',
         userId
       }
     });
@@ -131,7 +131,7 @@ export const getUserPlaylists = async (req: AuthRequest, res: Response): Promise
     const playlists = await prisma.playlist.findMany({
       where: {
         userId: targetUserId,
-        ...(isOwner ? {} : { privacy: 'Public' }) // Tricky query của Prisma
+        ...(isOwner ? {} : { privacy: 'PUBLIC' }) // Tricky query của Prisma
       },
       orderBy: { createdAt: 'desc' },
       include: {
@@ -175,7 +175,7 @@ export const getPlaylistById = async (req: AuthRequest, res: Response): Promise<
     }
 
     // Logic chặn quyền riêng tư: Playlist Private thì chỉ chủ nhân mới được xem
-    if (playlist.privacy === 'Private' && playlist.userId !== myId) {
+    if (playlist.privacy === 'PRIVATE' && playlist.userId !== myId) {
       res.status(403).json({ message: 'Playlist này đang ở chế độ riêng tư!' });
       return;
     }
