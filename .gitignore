@@ -2,3 +2,11 @@ streaming-app-backend/node_modules/
 streaming-app-backend/src/generated/prisma
 streaming-app-backend/.env
 .history/
+streaming-app-frontend/node_modules/
+streaming-app-frontend/.expo
+node_modules
+.expo/
+streaming-app-ai-service/.env
+streaming-app-ai-service/.venv/
+streaming-app-ai-service/**/__pycache__/
+streaming-app-ai-service/**/*.pyc

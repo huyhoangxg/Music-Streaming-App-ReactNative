@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   TouchableOpacity,
   TextInput,
   KeyboardAvoidingView,
@@ -13,11 +12,15 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons, FontAwesome, Feather } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import axios from 'axios';
+import * as SecureStore from 'expo-secure-store';
+import Constants from 'expo-constants';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-
-const API_URL = 'http://192.168.52.101:5000';
+const debuggerHost = Constants.expoConfig?.hostUri;
+const localhost = debuggerHost ? debuggerHost.split(':')[0] : 'localhost';
+const API_URL = `http://${localhost}:5000`;
 
 const COLORS = {
   baseBlack: '#000000',
@@ -32,6 +35,9 @@ const InputItem = ({
   placeholder,
   secureTextEntry,
   onTextChange,
+  value,
+  keyboardType,
+  maxLength,
   IconComponent = MaterialIcons,
 }: any) => (
   <View style={styles.inputWrapper}>
@@ -47,6 +53,9 @@ const InputItem = ({
       placeholderTextColor={COLORS.neutralLightGrey}
       secureTextEntry={secureTextEntry}
       autoCapitalize="none"
+      keyboardType={keyboardType}
+      maxLength={maxLength}
+      value={value}
       onChangeText={onTextChange}
     />
   </View>
@@ -56,43 +65,110 @@ const RegisterScreen = () => {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const route = useRoute<any>();
+  const initialVerificationEmail =
+    typeof route.params?.verificationEmail === 'string'
+      ? route.params.verificationEmail.trim().toLowerCase()
+      : '';
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState(initialVerificationEmail);
+  const [verificationCode, setVerificationCode] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
 
   const navigation = useNavigation<any>();
 
-  // ==========================================
-  // HÀM GỌI API ĐĂNG KÝ
-  // ==========================================
   const handleRegister = async () => {
-    // 1. Kiểm tra không được để trống
-    if (!username || !email || !password) {
-      Alert.alert('Oop!', 'Vui lòng điền đầy đủ thông tin nhé!');
+    const trimmedUsername = username.trim();
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!trimmedUsername || !normalizedEmail || !password) {
+      Alert.alert('Missing info', 'Please fill in username, email, and password.');
       return;
     }
 
     setIsLoading(true);
     try {
-      // 2. Bắn data xuống Backend
       const response = await axios.post(`${API_URL}/api/auth/register`, {
-        username,
-        email,
+        username: trimmedUsername,
+        email: normalizedEmail,
         password,
       });
 
-      // 3. Thành công thì báo và đá sang màn Login
-      Alert.alert('Đăng ký thành công!');
-      navigation.goBack();
-    } catch (error: any) {
-      // 4. Lỗi thì báo lỗi
-      console.log('Lỗi đăng ký:', error.response?.data || error.message);
+      setPendingVerificationEmail(normalizedEmail);
+      setVerificationCode('');
       Alert.alert(
-        'Lỗi',
-        error.response?.data?.message || 'Không thể kết nối đến server!',
+        'Verify your email',
+        response.data?.emailDeliveryFailed
+          ? response.data?.message || 'Could not send the verification email. Please resend the code.'
+          : 'A 6-digit verification code has been sent.',
+      );
+    } catch (error: any) {
+      console.log('Register error:', error.response?.data || error.message);
+      Alert.alert(
+        'Sign up failed',
+        error.response?.data?.message || 'Could not connect to the server.',
       );
     } finally {
-      setIsLoading(false); // Tắt vòng xoay loading
+      setIsLoading(false);
     }
   };
+
+  const handleVerifyEmail = async () => {
+    if (!pendingVerificationEmail || verificationCode.trim().length < 6) {
+      Alert.alert('Verification', 'Please enter the 6-digit verification code.');
+      return;
+    }
+
+    setIsVerifying(true);
+    try {
+      const response = await axios.post(`${API_URL}/api/auth/verify-email`, {
+        email: pendingVerificationEmail,
+        code: verificationCode.trim(),
+      });
+
+      const token = response.data.token;
+      if (token) {
+        await SecureStore.setItemAsync('userToken', token);
+        navigation.replace('Home');
+        return;
+      }
+
+      Alert.alert('Verified', 'Email verified. Please log in.');
+      navigation.goBack();
+    } catch (error: any) {
+      console.log('Verify email error:', error.response?.data || error.message);
+      Alert.alert(
+        'Verification failed',
+        error.response?.data?.message || 'Could not verify this email right now.',
+      );
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleResendCode = async () => {
+    if (!pendingVerificationEmail) {
+      return;
+    }
+
+    try {
+      const response = await axios.post(`${API_URL}/api/auth/resend-verification`, {
+        email: pendingVerificationEmail,
+      });
+      Alert.alert(
+        'Verification',
+        response.data?.message || 'A new verification code has been sent.',
+      );
+    } catch (error: any) {
+      console.log('Resend verification error:', error.response?.data || error.message);
+      Alert.alert(
+        'Verification',
+        error.response?.data?.message || 'Could not resend the verification code right now.',
+      );
+    }
+  };
+
+  const isVerifyingEmail = Boolean(pendingVerificationEmail);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -100,76 +176,122 @@ const RegisterScreen = () => {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.container}
       >
-        {/* ĐÃ FIX LẠI SCROLLVIEW: Bao bọc toàn bộ nội dung bên trong */}
         <ScrollView
           contentContainerStyle={{ flexGrow: 1 }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.header}>
-            <TouchableOpacity
-              style={styles.backButton}
-              onPress={() => navigation.goBack()}
-            >
+            <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
               <MaterialIcons name="arrow-back-ios" size={20} color={COLORS.whiteText} />
               <Text style={styles.backText}>Back</Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.titleContainer}>
-            <Text style={styles.titleText}>Let's get{'\n'}Started</Text>
+            <Text style={styles.titleText}>
+              {isVerifyingEmail ? 'Verify your\nemail' : "Let's get\nstarted"}
+            </Text>
           </View>
 
-          <View style={styles.formContainer}>
-            <InputItem
-              IconComponent={Feather}
-              iconName="user"
-              placeholder="Username"
-              onTextChange={setUsername}
-            />
-            <InputItem iconName="email" placeholder="Email" onTextChange={setEmail} />
-            <InputItem
-              iconName="lock-outline"
-              placeholder="Password"
-              secureTextEntry={true}
-              onTextChange={setPassword}
-            />
-          </View>
+          {isVerifyingEmail ? (
+            <>
+              <Text style={styles.verificationHint}>
+                Enter the 6-digit code sent to {pendingVerificationEmail}.
+              </Text>
 
-          {/* GẮN HÀM XỬ LÝ VÀO NÚT BẤM */}
-          <TouchableOpacity
-            style={styles.signUpButton}
-            onPress={handleRegister}
-            disabled={isLoading} // Khóa nút khi đang load
-          >
-            {isLoading ? (
-              <ActivityIndicator color={COLORS.baseBlack} /> // Hiện vòng xoay
-            ) : (
-              <Text style={styles.signUpButtonText}>Sign up</Text>
-            )}
-          </TouchableOpacity>
+              <View style={styles.formContainer}>
+                <InputItem
+                  iconName="verified-user"
+                  placeholder="Verification code"
+                  value={verificationCode}
+                  onTextChange={setVerificationCode}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                />
+              </View>
 
-          <View style={styles.dividerContainer}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>or</Text>
-            <View style={styles.dividerLine} />
-          </View>
+              <TouchableOpacity
+                style={styles.signUpButton}
+                onPress={handleVerifyEmail}
+                disabled={isVerifying}
+              >
+                {isVerifying ? (
+                  <ActivityIndicator color={COLORS.baseBlack} />
+                ) : (
+                  <Text style={styles.signUpButtonText}>Verify email</Text>
+                )}
+              </TouchableOpacity>
 
-          <View style={styles.socialContainer}>
-            <TouchableOpacity style={styles.socialButton}>
-              <FontAwesome name="apple" size={20} color={COLORS.whiteText} />
-              <Text style={styles.socialButtonText}>Continue with Apple</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.socialButton}>
-              <FontAwesome name="google" size={18} color={COLORS.whiteText} />
-              <Text style={styles.socialButtonText}>Continue with Google</Text>
-            </TouchableOpacity>
-          </View>
+              <TouchableOpacity style={styles.resendButton} onPress={handleResendCode}>
+                <Text style={styles.resendButtonText}>Resend code</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <View style={styles.formContainer}>
+                <InputItem
+                  IconComponent={Feather}
+                  iconName="user"
+                  placeholder="Username"
+                  value={username}
+                  onTextChange={setUsername}
+                />
+                <InputItem
+                  iconName="email"
+                  placeholder="Email"
+                  value={email}
+                  keyboardType="email-address"
+                  onTextChange={setEmail}
+                />
+                <InputItem
+                  iconName="lock-outline"
+                  placeholder="Password"
+                  value={password}
+                  secureTextEntry
+                  onTextChange={setPassword}
+                />
+              </View>
+
+              <TouchableOpacity
+                style={styles.signUpButton}
+                onPress={handleRegister}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <ActivityIndicator color={COLORS.baseBlack} />
+                ) : (
+                  <Text style={styles.signUpButtonText}>Sign up</Text>
+                )}
+              </TouchableOpacity>
+            </>
+          )}
+
+          {!isVerifyingEmail ? (
+            <>
+              <View style={styles.dividerContainer}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>or</Text>
+                <View style={styles.dividerLine} />
+              </View>
+
+              <View style={styles.socialContainer}>
+                <TouchableOpacity style={styles.socialButton}>
+                  <FontAwesome name="apple" size={20} color={COLORS.whiteText} />
+                  <Text style={styles.socialButtonText}>Continue with Apple</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.socialButton}>
+                  <FontAwesome name="google" size={18} color={COLORS.whiteText} />
+                  <Text style={styles.socialButtonText}>Continue with Google</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          ) : null}
 
           <View style={styles.footerContainer}>
             <Text style={styles.footerText}>Already have an account? </Text>
             <TouchableOpacity onPress={() => navigation.goBack()}>
-              <Text style={styles.footerLinkText}>Login</Text>
+              <Text style={styles.footerLinkText}>Log in</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -207,6 +329,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 48,
   },
+  verificationHint: {
+    color: COLORS.neutralLightGrey,
+    fontSize: 14.5,
+    lineHeight: 21,
+    marginBottom: 6,
+  },
   formContainer: {
     marginVertical: 15,
     gap: 16,
@@ -229,6 +357,15 @@ const styles = StyleSheet.create({
     marginVertical: 18,
   },
   signUpButtonText: { color: COLORS.baseBlack, fontSize: 16, fontWeight: '700' },
+  resendButton: {
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  resendButtonText: {
+    color: COLORS.accentOrange,
+    fontSize: 14.5,
+    fontWeight: '700',
+  },
   dividerContainer: {
     flexDirection: 'row',
     alignItems: 'center',

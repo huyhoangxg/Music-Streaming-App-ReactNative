@@ -1,69 +1,230 @@
+import type { UploadApiOptions, UploadApiResponse } from 'cloudinary';
 import prisma from '../prismaClient';
+import { AppError } from '../middlewares/errorMiddleware';
+import {
+  destroyCloudinaryAsset,
+  extractCloudinaryPublicId,
+  uploadToCloudinary,
+} from '../utils/uploadToCloudinary';
+
+const SONG_LIST_INCLUDE = {
+  user: { select: { id: true, fullName: true, username: true, avatarUrl: true } },
+  songGenres: { include: { genre: true } },
+} as const;
+
+function sanitizeSegment(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+}
+
+function buildImagePublicId(userId: string, title: string) {
+  const safeUserId = sanitizeSegment(userId);
+  const safeTitle = sanitizeSegment(title || 'untitled-track');
+  return `soundwave/images/${safeUserId}/${Date.now()}-${safeTitle}`;
+}
+
+function normalizeOptionalText(value?: string | null) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized ? normalized : null;
+}
+
+async function cleanupUploadedImage(upload?: UploadApiResponse | null) {
+  if (!upload?.public_id) {
+    return;
+  }
+
+  try {
+    await destroyCloudinaryAsset(upload.public_id, 'image');
+  } catch (cleanupError) {
+    console.error(`Failed to clean up uploaded image ${upload.public_id}:`, cleanupError);
+  }
+}
 
 export const songService = {
-  // 1. Logic tạo bài hát mới
-  async createSong(userId: string, data: any) {
-    const { title, fileUrl, imageUrl, duration, privacy } = data;
-
-    // Dùng transaction để đảm bảo tạo nhạc xong thì user cũng được cộng trackCount
-    return await prisma.$transaction(async (tx) => {
-      const newSong = await tx.song.create({
-        data: {
-          title,
-          fileUrl,
-          imageUrl,
-          duration,
-          privacy: privacy || 'PUBLIC',
-          userId,
-        }
-      });
-
-      await tx.user.update({
-        where: { id: userId },
-        data: { trackCount: { increment: 1 } }
-      });
-
-      return newSong;
+  async getPublicSongs(limit?: number) {
+    return prisma.song.findMany({
+      where: { privacy: 'PUBLIC', audioUrl: { not: '' } },
+      include: SONG_LIST_INCLUDE,
+      orderBy: { createdAt: 'desc' },
+      ...(limit ? { take: limit } : {}),
     });
   },
 
-  // 2. Logic lấy danh sách nhạc Public
-  async getPublicSongs() {
-    return await prisma.song.findMany({
-      where: { privacy: 'PUBLIC' },
+  async getTrendingSongs(limit = 10) {
+    return prisma.song.findMany({
+      where: { privacy: 'PUBLIC', audioUrl: { not: '' } },
+      include: SONG_LIST_INCLUDE,
+      orderBy: [{ playCount: 'desc' }, { likeCount: 'desc' }, { createdAt: 'desc' }],
+      take: limit,
+    });
+  },
+
+  async getListeningHistory(userId: string, limit = 10) {
+    const playHistory = await prisma.playHistory.findMany({
+      where: { userId },
+      orderBy: { playedAt: 'desc' },
+      take: Math.max(limit * 4, 20),
       include: {
-        user: { select: { id: true, fullName: true, username: true, avatarUrl: true } },
-        songGenres: { include: { genre: true } } // Chuẩn bị sẵn để hiển thị Tag/Genre sau này
+        song: {
+          include: SONG_LIST_INCLUDE,
+        },
       },
-      orderBy: { createdAt: 'desc' }
     });
-  },
 
-  // 3. Logic trackPlay (Ghi nhận lịch sử nghe cho AI)
-  async trackPlay(songId: string, userId?: string, data?: any) {
-    const { durationPlayed, completionRate, source } = data || {};
+    const seenSongIds = new Set<string>();
+    const uniqueSongs = [];
 
-    return await prisma.$transaction(async (tx) => {
-      // Tăng view
-      const updatedSong = await tx.song.update({
-        where: { id: songId },
-        data: { playCount: { increment: 1 } },
-        select: { playCount: true }
+    for (const history of playHistory) {
+      const song = history.song;
+      if (!song?.audioUrl || seenSongIds.has(song.id)) {
+        continue;
+      }
+
+      seenSongIds.add(song.id);
+      uniqueSongs.push({
+        ...song,
+        sourceContext: 'history',
+        lastPlayedAt: history.playedAt,
       });
 
-      // Nếu có user thì lưu lịch sử nghe
-      if (userId) {
-        await tx.playHistory.create({
-          data: {
-            userId,
-            songId,
-            durationPlayed: durationPlayed || 0,
-            completionRate: completionRate || 0,
-            source: source || 'unknown',
-          }
-        });
+      if (uniqueSongs.length >= limit) {
+        break;
       }
-      return updatedSong.playCount;
+    }
+
+    return uniqueSongs;
+  },
+
+  async updateSongById({
+    songId,
+    userId,
+    title,
+    description,
+    imageFile,
+  }: {
+    songId: string;
+    userId: string;
+    title?: string;
+    description?: string | null;
+    imageFile?: Express.Multer.File;
+  }) {
+    const song = await prisma.song.findUnique({
+      where: { id: songId },
+      include: SONG_LIST_INCLUDE,
     });
-  }
+
+    if (!song) {
+      throw new AppError(404, 'Song not found.');
+    }
+
+    if (song.userId !== userId) {
+      throw new AppError(403, 'You do not have permission to edit this song.');
+    }
+
+    const normalizedTitle = title === undefined ? undefined : title.trim();
+    if (title !== undefined && !normalizedTitle) {
+      throw new AppError(400, 'Title cannot be empty.');
+    }
+
+    const normalizedDescription = normalizeOptionalText(description);
+    const hasTextChange = title !== undefined || description !== undefined;
+
+    if (!imageFile && !hasTextChange) {
+      throw new AppError(400, 'No track changes were provided.');
+    }
+
+    let imageUpload: UploadApiResponse | null = null;
+
+    if (imageFile) {
+      const imageOptions: UploadApiOptions = {
+        folder: 'soundwave/images',
+        resource_type: 'image',
+        public_id: buildImagePublicId(userId, normalizedTitle ?? song.title),
+        overwrite: false,
+      };
+
+      try {
+        imageUpload = await uploadToCloudinary(imageFile, imageOptions);
+      } catch (error) {
+        throw new AppError(502, 'Failed to upload the new track image.', error);
+      }
+    }
+
+    try {
+      const updatedSong = await prisma.song.update({
+        where: { id: songId },
+        data: {
+          ...(normalizedTitle !== undefined ? { title: normalizedTitle } : {}),
+          ...(normalizedDescription !== undefined ? { description: normalizedDescription } : {}),
+          ...(imageUpload ? { imageUrl: imageUpload.secure_url } : {}),
+        },
+        include: SONG_LIST_INCLUDE,
+      });
+
+      if (imageUpload && song.imageUrl) {
+        const oldImagePublicId = extractCloudinaryPublicId(song.imageUrl);
+        if (oldImagePublicId) {
+          await destroyCloudinaryAsset(oldImagePublicId, 'image').catch((cleanupError) => {
+            console.error(`Failed to clean up previous image ${oldImagePublicId}:`, cleanupError);
+          });
+        }
+      }
+
+      return updatedSong;
+    } catch (error) {
+      await cleanupUploadedImage(imageUpload);
+      throw error;
+    }
+  },
+
+  async deleteSongById(songId: string, userId: string) {
+    const song = await prisma.song.findUnique({
+      where: { id: songId },
+      select: { id: true, userId: true, audioUrl: true, imageUrl: true },
+    });
+
+    if (!song) {
+      return { deleted: false };
+    }
+
+    if (song.userId !== userId) {
+      throw new AppError(403, 'You do not have permission to delete this song.');
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.song.delete({ where: { id: songId } });
+      await tx.user.updateMany({
+        where: { id: userId, trackCount: { gt: 0 } },
+        data: { trackCount: { decrement: 1 } },
+      });
+    });
+
+    const audioPublicId = extractCloudinaryPublicId(song.audioUrl);
+    const imagePublicId = extractCloudinaryPublicId(song.imageUrl);
+
+    if (audioPublicId) {
+      await destroyCloudinaryAsset(audioPublicId, 'video').catch((cleanupError) => {
+        console.error(`Failed to clean up audio asset ${audioPublicId}:`, cleanupError);
+      });
+    }
+
+    if (imagePublicId) {
+      await destroyCloudinaryAsset(imagePublicId, 'image').catch((cleanupError) => {
+        console.error(`Failed to clean up image asset ${imagePublicId}:`, cleanupError);
+      });
+    }
+
+    return { deleted: true };
+  },
 };

@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import prisma from '../prismaClient';
 import { AuthRequest } from '../middlewares/authMiddleware';
+import { AppError } from '../middlewares/errorMiddleware';
+import { likeService } from '../modules/interactions/like.service';
 
 // ==========================================
 // 1. TÍNH NĂNG THẢ TIM / BỎ TIM (TOGGLE LIKE)
@@ -10,62 +12,17 @@ export const toggleLike = async (req: AuthRequest, res: Response): Promise<void>
     const userId = req.user?.userId as string;
     const songId = req.params.songId as string;
 
-    if (!userId) {
-      res.status(401).json({ message: 'Bạn chưa đăng nhập!' });
-      return;
-    }
-
-    const song = await prisma.song.findUnique({ where: { id: songId } });
-    if (!song) {
-      res.status(404).json({ message: 'Không tìm thấy bài hát!' });
-      return;
-    }
-
-    const existingLike = await prisma.like.findUnique({
-      where: { userId_songId: { userId, songId } }
-    });
-
-    let newLikeCount: number = song.playCount; // Gắn type :number cho TS khỏi báo lỗi
-
-    await prisma.$transaction(async (tx) => {
-      if (existingLike) {
-        // Đã like -> Bỏ like
-        await tx.like.delete({ where: { userId_songId: { userId, songId } } });
-        const updatedSong = await tx.song.update({
-          where: { id: songId },
-          data: { likeCount: { decrement: 1 } }
-        });
-        newLikeCount = updatedSong.likeCount;
-      } else {
-        // Chưa like -> Thêm like
-        await tx.like.create({ data: { userId, songId } });
-        const updatedSong = await tx.song.update({
-          where: { id: songId },
-          data: { likeCount: { increment: 1 } }
-        });
-        newLikeCount = updatedSong.likeCount;
-
-        // Bắn thông báo nếu không phải tự like bài của mình
-        if (song.userId !== userId) {
-          await tx.notification.create({
-            data: {
-              userId: song.userId, // Người nhận là chủ bài hát
-              actorId: userId,     // Người bấm like
-              type: 'LIKE_SONG',
-              referenceId: songId
-            }
-          });
-        }
-      }
-    });
-
-    res.status(200).json({ 
-      message: existingLike ? 'Đã bỏ thích bài hát' : 'Đã thích bài hát', 
-      isLiked: !existingLike,
-      likeCount: newLikeCount 
+    const result = await likeService.toggleLike({ userId, songId });
+    res.status(200).json({
+      message: result.isLiked ? 'Đã thích bài hát' : 'Đã bỏ thích bài hát',
+      ...result,
     });
   } catch (error) {
     console.error("Lỗi toggleLike:", error);
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ message: error.message });
+      return;
+    }
     res.status(500).json({ message: 'Lỗi server khi xử lý Like.' });
   }
 };
@@ -96,7 +53,7 @@ export const addComment = async (req: AuthRequest, res: Response): Promise<void>
     }
 
     // Dùng Type any tạm thời cho comment mới tạo vì Prisma include có thể làm phức tạp Type
-    let newComment: any; 
+    let newComment: any;
     let newCommentCount: number = song.commentCount;
 
     await prisma.$transaction(async (tx) => {
@@ -126,10 +83,10 @@ export const addComment = async (req: AuthRequest, res: Response): Promise<void>
       }
     });
 
-    res.status(201).json({ 
-      message: 'Đã thêm bình luận', 
+    res.status(201).json({
+      message: 'Đã thêm bình luận',
       comment: newComment,
-      commentCount: newCommentCount 
+      commentCount: newCommentCount
     });
   } catch (error) {
     console.error("Lỗi addComment:", error);
@@ -156,6 +113,29 @@ export const getSongComments = async (req: Request, res: Response): Promise<void
   } catch (error) {
     console.error("Lỗi getSongComments:", error);
     res.status(500).json({ message: 'Lỗi server khi lấy bình luận.' });
+  }
+};
+
+// ==========================================
+// 3b. KIỂM TRA TRẠNG THÁI TƯƠNG TÁC CỦA USER
+// ==========================================
+export const getSongInteractionStatus = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId as string;
+    const songId = req.params.songId as string;
+
+    const [like, repost] = await Promise.all([
+      prisma.like.findUnique({ where: { userId_songId: { userId, songId } } }),
+      prisma.repost.findUnique({ where: { userId_songId: { userId, songId } } }),
+    ]);
+
+    res.status(200).json({
+      isLiked: !!like,
+      isReposted: !!repost,
+    });
+  } catch (error) {
+    console.error('Lỗi getSongInteractionStatus:', error);
+    res.status(500).json({ message: 'Lỗi server khi lấy trạng thái tương tác.' });
   }
 };
 
@@ -216,13 +196,69 @@ export const toggleRepost = async (req: AuthRequest, res: Response): Promise<voi
       }
     });
 
-    res.status(200).json({ 
-      message: existingRepost ? 'Đã gỡ bài hát khỏi tường nhà' : 'Đã đăng bài hát lên tường nhà', 
+    res.status(200).json({
+      message: existingRepost ? 'Đã gỡ bài hát khỏi tường nhà' : 'Đã đăng bài hát lên tường nhà',
       isReposted: !existingRepost,
-      repostCount: newRepostCount 
+      repostCount: newRepostCount
     });
   } catch (error) {
     console.error("Lỗi toggleRepost:", error);
     res.status(500).json({ message: 'Lỗi server khi xử lý Repost.' });
+  }
+};
+
+export const getMyReposts = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId as string;
+
+    if (!userId) {
+      res.status(401).json({ message: 'Bạn chưa đăng nhập!' });
+      return;
+    }
+
+    // Tìm trong bảng Repost của user này
+    const reposts = await prisma.repost.findMany({
+      where: { userId },
+      include: {
+        song: {
+          include: {
+            // Lấy thông tin tác giả của bài hát
+            user: { select: { fullName: true, username: true, avatarUrl: true } }
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Repost là 1 bảng trung gian, mình chỉ cần móc cái ruột 'song' ra để trả về cho Frontend
+    const repostedSongs = reposts.map(r => r.song);
+
+    res.status(200).json(repostedSongs);
+  } catch (error) {
+    console.error("Lỗi getMyReposts:", error);
+    res.status(500).json({ message: 'Lỗi server khi lấy danh sách nhạc repost.' });
+  }
+};
+
+export const getMyLikedSongs = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId as string;
+    const likesData = await prisma.like.findMany({
+      where: { userId },
+      include: {
+        song: {
+          include: {
+            user: { select: { id: true, username: true, fullName: true, avatarUrl: true } }
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const likedTracks = likesData.map(l => l.song);
+    res.status(200).json(likedTracks);
+  } catch (error) {
+    console.error("Lỗi getMyLikedSongs:", error);
+    res.status(500).json({ message: 'Lỗi server khi lấy nhạc đã thích.' });
   }
 };

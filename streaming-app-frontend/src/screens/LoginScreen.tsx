@@ -1,9 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   TouchableOpacity,
   TextInput,
   KeyboardAvoidingView,
@@ -15,10 +14,31 @@ import {
 import { MaterialIcons, FontAwesome } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import axios from 'axios';
-import * as SecureStore from 'expo-secure-store'; // Két sắt mã hóa của Expo
+import * as SecureStore from 'expo-secure-store';
+import Constants from 'expo-constants';
+import * as Google from 'expo-auth-session/providers/google';
+import * as WebBrowser from 'expo-web-browser';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-// NHỚ SỬA IP NÀY GIỐNG BÊN MÀN REGISTER NHÉ
-const API_URL = 'http://192.168.52.101:5000';
+WebBrowser.maybeCompleteAuthSession();
+
+const debuggerHost = Constants.expoConfig?.hostUri;
+const localhost = debuggerHost ? debuggerHost.split(':')[0] : 'localhost';
+const API_URL = `http://${localhost}:5000`;
+const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+const GOOGLE_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID;
+const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
+const GOOGLE_CLIENT_ID_PLACEHOLDER = 'missing-google-client-id.apps.googleusercontent.com';
+const GOOGLE_CLIENT_ID_FOR_PLATFORM = Platform.select({
+  ios: GOOGLE_IOS_CLIENT_ID,
+  android: GOOGLE_ANDROID_CLIENT_ID,
+  default: GOOGLE_WEB_CLIENT_ID,
+});
+const GOOGLE_CLIENT_ID_ENV_NAME = Platform.select({
+  ios: 'EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID',
+  android: 'EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID',
+  default: 'EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID',
+});
 
 const COLORS = {
   baseBlack: '#000000',
@@ -57,64 +77,128 @@ const LoginScreen = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const navigation = useNavigation<any>();
 
-  // ==========================================
-  // 1. ĐĂNG NHẬP THƯỜNG (BẢO MẬT TOKEN)
-  // ==========================================
+  const [googleRequest, googleResponse, promptGoogleLogin] = Google.useAuthRequest({
+    clientId: GOOGLE_CLIENT_ID_FOR_PLATFORM || GOOGLE_CLIENT_ID_PLACEHOLDER,
+    scopes: ['openid', 'profile', 'email'],
+  });
+
+  useEffect(() => {
+    const completeGoogleLogin = async () => {
+      if (googleResponse?.type !== 'success') {
+        if (googleResponse?.type === 'error') {
+          Alert.alert('Google login failed', 'Could not finish Google login.');
+          setIsGoogleLoading(false);
+        }
+        return;
+      }
+
+      const accessToken = googleResponse.authentication?.accessToken;
+      if (!accessToken) {
+        Alert.alert('Google login failed', 'Google did not return an access token.');
+        setIsGoogleLoading(false);
+        return;
+      }
+
+      try {
+        const response = await axios.post(`${API_URL}/api/auth/google`, { accessToken });
+        const token = response.data.token;
+
+        if (!token) {
+          Alert.alert('Google login failed', 'Server did not return a session token.');
+          return;
+        }
+
+        await SecureStore.setItemAsync('userToken', token);
+        navigation.replace('Home');
+      } catch (error: any) {
+        console.log('Google login error:', error.response?.data || error.message);
+        Alert.alert(
+          'Google login failed',
+          error.response?.data?.message || 'Could not log in with Google right now.',
+        );
+      } finally {
+        setIsGoogleLoading(false);
+      }
+    };
+
+    void completeGoogleLogin();
+  }, [googleResponse, navigation]);
+
   const handleLogin = async () => {
     if (!email || !password) {
-      Alert.alert('Oop!', 'Nhập thiếu email hoặc mật khẩu rồi kìa!');
+      Alert.alert('Missing info', 'Please enter email and password.');
       return;
     }
 
     setIsLoading(true);
     try {
       const response = await axios.post(`${API_URL}/api/auth/login`, {
-        email,
+        email: email.trim().toLowerCase(),
         password,
       });
 
-      // Lấy token từ backend trả về (Giả sử backend trả về response.data.token)
       const token = response.data.token;
-
       if (token) {
-        // Cất token vào két sắt mã hóa của thiết bị
         await SecureStore.setItemAsync('userToken', token);
-
-        // Dùng replace thay vì navigate để user không vuốt ngược lại màn hình Login được
         navigation.replace('Home');
       } else {
-        Alert.alert('Lỗi', 'Không lấy được phiên đăng nhập từ máy chủ.');
+        Alert.alert('Login failed', 'Server did not return a session token.');
       }
     } catch (error: any) {
-      console.log('Lỗi đăng nhập:', error.response?.data || error.message);
+      console.log('Login error:', error.response?.data || error.message);
+      if (error.response?.status === 403 && error.response?.data?.code === 'EMAIL_NOT_VERIFIED') {
+        Alert.alert(
+          'Verify your email',
+          error.response.data.message || 'Please verify your email before logging in.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Verify',
+              onPress: () =>
+                navigation.navigate('Register', {
+                  verificationEmail: error.response?.data?.email || email.trim().toLowerCase(),
+                }),
+            },
+          ],
+        );
+        return;
+      }
+
       Alert.alert(
-        'Sai thông tin',
-        error.response?.data?.message || 'Email hoặc mật khẩu không chính xác!',
+        'Incorrect login',
+        error.response?.data?.message || 'Email or password is incorrect.',
       );
     } finally {
       setIsLoading(false);
     }
   };
 
-  // ==========================================
-  // 2. ĐĂNG NHẬP BẰNG GOOGLE (Bộ khung chờ)
-  // ==========================================
-  const handleGoogleLogin = () => {
-    Alert.alert(
-      'Sắp ra mắt',
-      'Để dùng được tính năng này, anh em mình sẽ cần setup Firebase Auth và lấy API Key từ Google Cloud Console ở các bước sau nhé!',
-    );
+  const handleGoogleLogin = async () => {
+    if (!GOOGLE_CLIENT_ID_FOR_PLATFORM) {
+      Alert.alert(
+        'Google login is not configured',
+        `Please set ${GOOGLE_CLIENT_ID_ENV_NAME} in streaming-app-frontend/.env, then restart Expo with cache cleared.`,
+      );
+      return;
+    }
+
+    setIsGoogleLoading(true);
+    try {
+      await promptGoogleLogin();
+    } catch (error) {
+      console.log('Google prompt error:', error);
+      setIsGoogleLoading(false);
+      Alert.alert('Google login failed', 'Could not open Google login.');
+    }
   };
 
-  // ==========================================
-  // 3. ĐĂNG NHẬP BẰNG APPLE (Bộ khung chờ)
-  // ==========================================
   const handleAppleLogin = () => {
     Alert.alert(
-      'Sắp ra mắt',
-      'Cần có tài khoản Apple Developer (khoảng 99$/năm) để mở khóa tính năng này trên iOS!',
+      'Coming soon',
+      'Sign in with Apple needs Apple Developer setup before it can be enabled.',
     );
   };
 
@@ -124,7 +208,6 @@ const LoginScreen = () => {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.container}
       >
-        {/* Dùng ScrollView để fix triệt để vụ bàn phím cứng đầu */}
         <ScrollView
           contentContainerStyle={{ flexGrow: 1 }}
           keyboardShouldPersistTaps="handled"
@@ -138,7 +221,7 @@ const LoginScreen = () => {
           </View>
 
           <View style={styles.titleContainer}>
-            <Text style={styles.titleText}>Welcome{'\n'}Back</Text>
+            <Text style={styles.titleText}>Welcome{'\n'}back</Text>
           </View>
 
           <View style={styles.formContainer}>
@@ -146,20 +229,16 @@ const LoginScreen = () => {
             <InputItem
               iconName="lock-outline"
               placeholder="Password"
-              secureTextEntry={true}
+              secureTextEntry
               onTextChange={setPassword}
             />
 
             <TouchableOpacity style={styles.forgotPasswordContainer}>
-              <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+              <Text style={styles.forgotPasswordText}>Forgot password?</Text>
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            style={styles.loginButton}
-            onPress={handleLogin}
-            disabled={isLoading}
-          >
+          <TouchableOpacity style={styles.loginButton} onPress={handleLogin} disabled={isLoading}>
             {isLoading ? (
               <ActivityIndicator color={COLORS.baseBlack} />
             ) : (
@@ -174,16 +253,24 @@ const LoginScreen = () => {
           </View>
 
           <View style={styles.socialContainer}>
-            {/* NÚT APPLE */}
             <TouchableOpacity style={styles.socialButton} onPress={handleAppleLogin}>
               <FontAwesome name="apple" size={20} color={COLORS.whiteText} />
               <Text style={styles.socialButtonText}>Continue with Apple</Text>
             </TouchableOpacity>
 
-            {/* NÚT GOOGLE */}
-            <TouchableOpacity style={styles.socialButton} onPress={handleGoogleLogin}>
-              <FontAwesome name="google" size={18} color={COLORS.whiteText} />
-              <Text style={styles.socialButtonText}>Continue with Google</Text>
+            <TouchableOpacity
+              style={[styles.socialButton, isGoogleLoading && { opacity: 0.7 }]}
+              onPress={handleGoogleLogin}
+              disabled={isGoogleLoading || !googleRequest}
+            >
+              {isGoogleLoading ? (
+                <ActivityIndicator color={COLORS.whiteText} />
+              ) : (
+                <>
+                  <FontAwesome name="google" size={18} color={COLORS.whiteText} />
+                  <Text style={styles.socialButtonText}>Continue with Google</Text>
+                </>
+              )}
             </TouchableOpacity>
           </View>
 
@@ -297,6 +384,7 @@ const styles = StyleSheet.create({
     borderRadius: 50,
     paddingVertical: 15,
     gap: 8,
+    minHeight: 50,
   },
   socialButtonText: {
     color: COLORS.whiteText,

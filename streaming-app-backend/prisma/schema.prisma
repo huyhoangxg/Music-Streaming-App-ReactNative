@@ -1,12 +1,240 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql" 
+  provider = "postgresql"
+}
+
+model User {
+  id                          String                @id @default(uuid())
+  username                    String                @unique
+  email                       String                @unique
+  passwordHash                String
+  fullName                    String?
+  avatarUrl                   String?
+  bio                         String?
+  isPrivate                   Boolean               @default(false)
+  createdAt                   DateTime              @default(now())
+  updatedAt                   DateTime              @updatedAt
+  followerCount               Int                   @default(0)
+  followingCount              Int                   @default(0)
+  trackCount                  Int                   @default(0)
+  emailVerified               Boolean               @default(false)
+  emailVerifiedAt             DateTime?
+  emailVerificationCodeHash   String?
+  emailVerificationExpiresAt  DateTime?
+  emailVerificationLastSentAt DateTime?
+  comments                    Comment[]
+  followers                   Follow[]              @relation("UserFollowers")
+  following                   Follow[]              @relation("UserFollowing")
+  likes                       Like[]
+  triggeredNotis              Notification[]        @relation("TriggeredNotis")
+  receivedNotis               Notification[]        @relation("ReceivedNotis")
+  playHistories               PlayHistory[]
+  playlists                   Playlist[]
+  recommendationLogs          RecommendationLog[]
+  reposts                     Repost[]
+  songs                       Song[]
+  genrePreferences            UserGenrePreference[]
+}
+
+model PendingRegistration {
+  id                       String   @id @default(uuid())
+  username                 String   @unique
+  email                    String   @unique
+  passwordHash             String
+  fullName                 String?
+  verificationCodeHash     String
+  verificationExpiresAt    DateTime
+  verificationLastSentAt   DateTime @default(now())
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@index([verificationExpiresAt])
+}
+
+model Song {
+  id                 String              @id @default(uuid())
+  title              String
+  audioUrl           String
+  imageUrl           String?
+  duration           Int?
+  privacy            Privacy             @default(PUBLIC)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  playCount          Int                 @default(0)
+  likeCount          Int                 @default(0)
+  repostCount        Int                 @default(0)
+  commentCount       Int                 @default(0)
+  userId             String
+  aiErrorMessage     String?
+  aiGenresJson       Json?
+  aiModelVersion     String?
+  aiPrimaryGenre     String?
+  aiStatus           String?
+  finalPrimaryGenre  String?
+  genreConfidence    Float?
+  genreSource        String?
+  uploaderGenre      String?
+  description        String?
+  comments           Comment[]
+  likes              Like[]
+  playHistories      PlayHistory[]
+  playlistSongs      PlaylistSong[]
+  recommendationLogs RecommendationLog[]
+  reposts            Repost[]
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  songGenres         SongGenre[]
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@index([finalPrimaryGenre])
+}
+
+model Playlist {
+  id            String         @id @default(uuid())
+  title         String
+  privacy       Privacy        @default(PUBLIC)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  userId        String
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  playlistSongs PlaylistSong[]
+}
+
+model PlaylistSong {
+  id         Int      @id @default(autoincrement())
+  addedAt    DateTime @default(now())
+  orderIndex Int?
+  playlistId String
+  songId     String
+  playlist   Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  song       Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, songId])
+  @@index([playlistId, orderIndex])
+}
+
+model Comment {
+  id        Int      @id @default(autoincrement())
+  content   String
+  createdAt DateTime @default(now())
+  userId    String
+  songId    String
+  song      Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([songId, createdAt])
+}
+
+model Like {
+  createdAt DateTime @default(now())
+  userId    String
+  songId    String
+  song      Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, songId])
+  @@index([songId, createdAt])
+}
+
+model Repost {
+  createdAt DateTime @default(now())
+  userId    String
+  songId    String
+  song      Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, songId])
+  @@index([songId, createdAt])
+}
+
+model Follow {
+  createdAt  DateTime     @default(now())
+  status     FollowStatus @default(ACCEPTED)
+  followerId String
+  followedId String
+  followed   User         @relation("UserFollowers", fields: [followedId], references: [id], onDelete: Cascade)
+  follower   User         @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+
+  @@id([followerId, followedId])
+  @@index([followedId, status])
+}
+
+model Notification {
+  id          Int              @id @default(autoincrement())
+  type        NotificationType
+  referenceId String?
+  isRead      Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  userId      String
+  actorId     String
+  actor       User             @relation("TriggeredNotis", fields: [actorId], references: [id], onDelete: Cascade)
+  user        User             @relation("ReceivedNotis", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+}
+
+model Genre {
+  id              Int                   @id @default(autoincrement())
+  name            String                @unique
+  songGenres      SongGenre[]
+  userPreferences UserGenrePreference[]
+}
+
+model SongGenre {
+  songId    String
+  genreId   Int
+  score     Float?
+  isPrimary Boolean @default(false)
+  genre     Genre   @relation(fields: [genreId], references: [id], onDelete: Cascade)
+  song      Song    @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@id([songId, genreId])
+  @@index([genreId, score])
+}
+
+model PlayHistory {
+  id             String   @id @default(uuid())
+  playedAt       DateTime @default(now())
+  durationPlayed Int?
+  completionRate Float?
+  source         String?
+  userId         String
+  songId         String
+  song           Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, playedAt])
+  @@index([songId, playedAt])
+}
+
+model UserGenrePreference {
+  userId    String
+  genreId   Int
+  score     Float
+  updatedAt DateTime @updatedAt
+  genre     Genre    @relation(fields: [genreId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, genreId])
+  @@index([userId, score])
+}
+
+model RecommendationLog {
+  id            String   @id @default(uuid())
+  source        String
+  score         Float?
+  recommendedAt DateTime @default(now())
+  clicked       Boolean  @default(false)
+  played        Boolean  @default(false)
+  userId        String
+  songId        String
+  song          Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, recommendedAt])
 }
 
 enum Privacy {
@@ -27,250 +255,5 @@ enum NotificationType {
   COMMENT_SONG
   REPOST_SONG
   PLAYLIST_ADD
-}
-
-// ==========================================
-// MODELS: CORE ENTITIES
-// ==========================================
-
-model User {
-  id           String    @id @default(uuid())
-  username     String    @unique
-  email        String    @unique
-  passwordHash String
-  fullName     String?
-  avatarUrl    String?
-  bio          String?
-  isPrivate    Boolean   @default(false)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt // Thêm updatedAt
-
-  // Counters Cache
-  followerCount  Int @default(0)
-  followingCount Int @default(0)
-  trackCount     Int @default(0)
-
-  // Core Relations
-  songs     Song[]
-  playlists Playlist[]
-  comments  Comment[]
-  likes     Like[]
-  reposts   Repost[]
-
-  // Social Relations
-  followers Follow[] @relation("UserFollowers")
-  following Follow[] @relation("UserFollowing")
-  receivedNotis  Notification[] @relation("ReceivedNotis")
-  triggeredNotis Notification[] @relation("TriggeredNotis")
-
-  // AI & Analytics Relations (MỚI)
-  playHistories      PlayHistory[]
-  genrePreferences   UserGenrePreference[]
-  recommendationLogs RecommendationLog[]
-}
-
-model Song {
-  id        String   @id @default(uuid())
-  title     String
-  fileUrl   String
-  imageUrl  String?
-  duration  Int?
-  privacy   Privacy  @default(PUBLIC) // Dùng Enum
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt // Thêm updatedAt
-
-  // Counters Cache
-  playCount    Int @default(0)
-  likeCount    Int @default(0)
-  repostCount  Int @default(0)
-  commentCount Int @default(0)
-
-  // Relations
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  comments      Comment[]
-  likes         Like[]
-  reposts       Repost[]
-  playlistSongs PlaylistSong[]
-
-  // AI & Analytics Relations (MỚI)
-  songGenres         SongGenre[]
-  playHistories      PlayHistory[]
-  recommendationLogs RecommendationLog[]
-
-  @@index([userId, createdAt])
-  @@index([createdAt])
-}
-
-model Playlist {
-  id        String   @id @default(uuid())
-  title     String
-  privacy   Privacy  @default(PUBLIC) // Dùng Enum
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt // Thêm updatedAt
-
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  playlistSongs PlaylistSong[]
-}
-
-// ==========================================
-// MODELS: SOCIAL & INTERACTIONS
-// ==========================================
-
-model PlaylistSong {
-  id         Int      @id @default(autoincrement())
-  addedAt    DateTime @default(now())
-  orderIndex Int?
-
-  playlistId String
-  playlist   Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
-  songId     String
-  song       Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
-
-  @@unique([playlistId, songId]) // Chặn 1 bài add 2 lần vào 1 playlist
-  @@index([playlistId, orderIndex])
-}
-
-model Comment {
-  id        Int      @id @default(autoincrement())
-  content   String
-  createdAt DateTime @default(now())
-
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  songId String
-  song   Song   @relation(fields: [songId], references: [id], onDelete: Cascade)
-
-  @@index([songId, createdAt])
-}
-
-model Like {
-  createdAt DateTime @default(now())
-
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  songId String
-  song   Song   @relation(fields: [songId], references: [id], onDelete: Cascade)
-
-  @@id([userId, songId])
-  @@index([songId, createdAt])
-}
-
-model Repost {
-  createdAt DateTime @default(now())
-
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  songId String
-  song   Song   @relation(fields: [songId], references: [id], onDelete: Cascade)
-
-  @@id([userId, songId])
-  @@index([songId, createdAt])
-}
-
-model Follow {
-  createdAt DateTime @default(now())
-  status    FollowStatus @default(ACCEPTED) // Dùng Enum
-
-  followerId String
-  follower   User @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
-  followedId String
-  followed   User @relation("UserFollowers", fields: [followedId], references: [id], onDelete: Cascade)
-
-  @@id([followerId, followedId])
-  @@index([followedId, status])
-}
-
-model Notification {
-  id          Int              @id @default(autoincrement())
-  type        NotificationType // Dùng Enum
-  referenceId String?
-  isRead      Boolean          @default(false)
-  createdAt   DateTime         @default(now())
-
-  userId  String
-  user    User @relation("ReceivedNotis", fields: [userId], references: [id], onDelete: Cascade)
-  actorId String
-  actor   User @relation("TriggeredNotis", fields: [actorId], references: [id], onDelete: Cascade)
-
-  @@index([userId, isRead, createdAt])
-}
-
-// ==========================================
-// MODELS: AI & RECOMMENDATION (LỚP DỮ LIỆU MỚI)
-// ==========================================
-
-// 1. Quản lý Thể loại 
-model Genre {
-  id               Int                   @id @default(autoincrement())
-  name             String                @unique // VD: "Pop", "Lo-fi", "R&B"
-  songGenres       SongGenre[]
-  userPreferences  UserGenrePreference[]
-}
-
-// Quan hệ n-n giữa Song và Genre 
-model SongGenre {
-  songId    String
-  genreId   Int
-  score     Float?   
-  isPrimary Boolean  @default(false) // Thể loại chính
-
-  song  Song  @relation(fields: [songId], references: [id], onDelete: Cascade)
-  genre Genre @relation(fields: [genreId], references: [id], onDelete: Cascade)
-
-  @@id([songId, genreId])
-  @@index([genreId, score])
-}
-
-// 2. Lịch sử nghe nhạc 
-model PlayHistory {
-  id             String   @id @default(uuid())
-  playedAt       DateTime @default(now())
-  durationPlayed Int?     // Nghe bao nhiêu giây
-  completionRate Float?   
-  source         String?  
-
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  songId String
-  song   Song   @relation(fields: [songId], references: [id], onDelete: Cascade)
-
-  @@index([userId, playedAt])
-  @@index([songId, playedAt])
-}
-
-// 3. Hồ sơ sở thích người dùng (User Taste Profile)
-model UserGenrePreference {
-  userId    String
-  genreId   Int
-  score     Float   
-  updatedAt DateTime @updatedAt
-
-  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  genre Genre @relation(fields: [genreId], references: [id], onDelete: Cascade)
-
-  @@id([userId, genreId])
-  @@index([userId, score])
-}
-
-// 4. Log lại lịch sử AI đã gợi ý
-model RecommendationLog {
-  id            String   @id @default(uuid())
-  source        String   
-  score         Float?   
-  recommendedAt DateTime @default(now())
-  clicked       Boolean  @default(false) 
-  played        Boolean  @default(false) 
-
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  songId String
-  song   Song   @relation(fields: [songId], references: [id], onDelete: Cascade)
-
-  @@index([userId, recommendedAt])
+  NEW_TRACK
 }

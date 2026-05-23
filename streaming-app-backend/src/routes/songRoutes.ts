@@ -1,37 +1,32 @@
 import { Router } from 'express';
-import { 
-  uploadSong, 
-  getPublicSongs, 
-  getSongById, 
-  trackPlay 
+import {
+  getPublicSongs,
+  getSongById,
+  trackPlay,
+  getMySongs,
+  getUserSongs,
+  getTrendingSongs,
+  deleteSong,
+  getListeningHistory,
+  updateSong,
 } from '../controllers/songController';
 import { authenticateToken, optionalAuthenticateToken } from '../middlewares/authMiddleware';
+import { songEditFields } from '../middlewares/uploadMiddleware';
+import songUploadRoutes from '../modules/songs/song.routes';
 
 const router = Router();
 
-// ==========================================
-// NHÓM 1: PUBLIC / KHÔNG BẮT BUỘC ĐĂNG NHẬP
-// ==========================================
-
-// Lấy danh sách nhạc Public (Trang chủ/Khám phá)
-// GET /api/songs/public
 router.get('/public', getPublicSongs);
-
-// Xem chi tiết & Play nhạc (Có check Public/Private)
-// GET /api/songs/:songId
-router.get('/:songId', optionalAuthenticateToken, getSongById);
-
-// Tăng lượt nghe (Play Count)
-// POST /api/songs/:songId/play
+router.get('/trending', getTrendingSongs);
+router.get('/my-songs', authenticateToken, getMySongs);
+router.get('/listening-history', authenticateToken, getListeningHistory);
+router.get('/user/:userId', authenticateToken, getUserSongs);
 router.post('/:songId/play', trackPlay);
 
+router.use('/', songUploadRoutes);
 
-// ==========================================
-// NHÓM 2: BẮT BUỘC ĐĂNG NHẬP (CÓ TOKEN)
-// ==========================================
-
-// Đăng bài hát mới
-// POST /api/songs
-router.post('/', authenticateToken, uploadSong);
+router.get('/:songId', optionalAuthenticateToken, getSongById);
+router.put('/:songId', authenticateToken, songEditFields, updateSong);
+router.delete('/:songId', authenticateToken, deleteSong);
 
 export default router;

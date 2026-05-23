@@ -1,0 +1,87 @@
+{
+  "info": {
+    "name": "Streaming App Demo",
+    "_postman_id": "df7df7a7-2ed8-42b9-b1be-a1d9c9a7f104",
+    "description": "Manual collection for AI health, analyze, upload, and recommendation demo flows.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "backendUrl", "value": "http://127.0.0.1:5000" },
+    { "key": "aiUrl", "value": "http://127.0.0.1:8000" },
+    { "key": "token", "value": "" },
+    { "key": "seedSongId", "value": "" },
+    { "key": "audioUrl", "value": "https://example.com/file.mp3" }
+  ],
+  "item": [
+    {
+      "name": "AI Health",
+      "request": {
+        "method": "GET",
+        "url": "{{aiUrl}}/health"
+      }
+    },
+    {
+      "name": "AI Analyze Song",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"songId\": \"demo-song-001\",\n  \"audioUrl\": \"{{audioUrl}}\"\n}"
+        },
+        "url": "{{aiUrl}}/analyze/song"
+      }
+    },
+    {
+      "name": "Upload Song",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            { "key": "title", "value": "Demo Upload Song", "type": "text" },
+            { "key": "uploaderGenre", "value": "Pop", "type": "text" },
+            { "key": "audio", "type": "file", "src": "" },
+            { "key": "image", "type": "file", "src": "" }
+          ]
+        },
+        "url": "{{backendUrl}}/api/songs/upload"
+      }
+    },
+    {
+      "name": "Home Feed",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": "{{backendUrl}}/api/recommendations/for-you?limit=12"
+      }
+    },
+    {
+      "name": "Autoplay",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": "{{backendUrl}}/api/recommendations/autoplay/{{seedSongId}}?limit=5"
+      }
+    },
+    {
+      "name": "Similar Tracks",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": "{{backendUrl}}/api/recommendations/similar/{{seedSongId}}?limit=5"
+      }
+    }
+  ]
+}

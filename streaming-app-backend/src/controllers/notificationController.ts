@@ -2,6 +2,14 @@ import { Response } from 'express';
 import prisma from '../prismaClient';
 import { AuthRequest } from '../middlewares/authMiddleware';
 
+const SONG_NOTIFICATION_TYPES = new Set([
+  'LIKE_SONG',
+  'COMMENT_SONG',
+  'REPOST_SONG',
+  'PLAYLIST_ADD',
+  'NEW_TRACK',
+]);
+
 // ==========================================
 // 1. LẤY DANH SÁCH THÔNG BÁO CỦA MÌNH
 // ==========================================
@@ -20,7 +28,44 @@ export const getNotifications = async (req: AuthRequest, res: Response): Promise
       }
     });
 
-    res.status(200).json(notifications);
+    const songReferenceIds = [
+      ...new Set(
+        notifications
+          .filter((notification) => SONG_NOTIFICATION_TYPES.has(notification.type))
+          .map((notification) => notification.referenceId)
+          .filter((referenceId): referenceId is string => Boolean(referenceId)),
+      ),
+    ];
+
+    const referenceSongs =
+      songReferenceIds.length > 0
+        ? await prisma.song.findMany({
+            where: { id: { in: songReferenceIds } },
+            include: {
+              user: {
+                select: { id: true, username: true, fullName: true, avatarUrl: true },
+              },
+            },
+          })
+        : [];
+
+    const songById = new Map(referenceSongs.map((song) => [song.id, song]));
+
+    const formattedNotifications = notifications.map((notification) => {
+      const referenceSong =
+        notification.referenceId && SONG_NOTIFICATION_TYPES.has(notification.type)
+          ? songById.get(notification.referenceId) ?? null
+          : null;
+
+      return {
+        ...notification,
+        referenceSong,
+        targetType: referenceSong ? 'song' : 'user',
+        targetId: referenceSong?.id ?? notification.actorId,
+      };
+    });
+
+    res.status(200).json(formattedNotifications);
   } catch (error) {
     console.error("Lỗi getNotifications:", error);
     res.status(500).json({ message: 'Lỗi server khi lấy thông báo.' });

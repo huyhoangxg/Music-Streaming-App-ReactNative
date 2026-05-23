@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import { getMyProfile, updateProfile, getUserProfile } from '../controllers/userController';
+import { getMyProfile, updateProfile, getUserProfile, getAllUsers, toggleFollowUser, getFollowers, getFollowing } from '../controllers/userController';
 import { authenticateToken } from '../middlewares/authMiddleware';
+import { avatarUpload } from '../middlewares/uploadMiddleware';
 
 const router = Router();
 
@@ -8,9 +9,16 @@ const router = Router();
 // Endpoint: GET /api/users/me
 router.get('/me', authenticateToken, getMyProfile);
 
+router.get('/', getAllUsers);
+
+router.post('/:userId/follow', authenticateToken, toggleFollowUser);
+
+router.get('/:userId/followers', authenticateToken, getFollowers);
+router.get('/:userId/following', authenticateToken, getFollowing);
+
 // 2. Cập nhật thông tin cá nhân (Yêu cầu đăng nhập)
 // Endpoint: PUT /api/users/me
-router.put('/me', authenticateToken, updateProfile);
+router.put('/me', authenticateToken, avatarUpload, updateProfile);
 
 // 3. Lấy thông tin profile của một user bất kỳ (Yêu cầu đăng nhập)
 // Endpoint: GET /api/users/:userId

@@ -1,117 +1,774 @@
 import { Request, Response } from 'express';
+import { AuthRequest } from '../middlewares/authMiddleware';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import { Prisma } from '@prisma/client';
 import prisma from '../prismaClient';
+import {
+  createVerificationCode,
+  getVerificationExpiry,
+  hashVerificationCode,
+  isValidEmail,
+  normalizeEmail,
+  normalizeUsername,
+  sendVerificationEmail,
+} from '../services/emailVerificationService';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secret_key_tam_thoi';
+const DEFAULT_USER_AVATAR_URL =
+  'https://upload.wikimedia.org/wikipedia/commons/f/f7/Facebook_default_male_avatar.gif';
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const GOOGLE_LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const VERIFY_WINDOW_MS = 15 * 60 * 1000;
+const RESEND_WINDOW_MS = 15 * 60 * 1000;
+const RESEND_COOLDOWN_MS = 60 * 1000;
 
-// 1. ĐĂNG KÝ TÀI KHOẢN (REGISTER)
+type RateLimitBucket = {
+  count: number;
+  resetAt: number;
+};
+
+const loginAttempts = new Map<string, RateLimitBucket>();
+const googleLoginAttempts = new Map<string, RateLimitBucket>();
+const verifyAttempts = new Map<string, RateLimitBucket>();
+const resendAttempts = new Map<string, RateLimitBucket>();
+
+type GoogleProfile = {
+  sub?: string;
+  email?: string;
+  email_verified?: boolean;
+  name?: string;
+  picture?: string;
+};
+
+function consumeRateLimit(
+  store: Map<string, RateLimitBucket>,
+  key: string,
+  limit: number,
+  windowMs: number,
+) {
+  const now = Date.now();
+  const bucket = store.get(key);
+
+  if (!bucket || bucket.resetAt <= now) {
+    store.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
+  if (bucket.count >= limit) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.ceil((bucket.resetAt - now) / 1000),
+    };
+  }
+
+  bucket.count += 1;
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+
+function clearRateLimit(store: Map<string, RateLimitBucket>, key: string) {
+  store.delete(key);
+}
+
+function createAuthToken(userId: string) {
+  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '30d' });
+}
+
+function toSafeUser(user: {
+  id: string;
+  username: string;
+  email: string;
+  fullName: string | null;
+  avatarUrl?: string | null;
+  followerCount?: number;
+  followingCount?: number;
+  trackCount?: number;
+  emailVerified?: boolean;
+  createdAt?: Date;
+}) {
+  return {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    fullName: user.fullName,
+    avatarUrl: user.avatarUrl || DEFAULT_USER_AVATAR_URL,
+    followerCount: user.followerCount,
+    followingCount: user.followingCount,
+    trackCount: user.trackCount,
+    emailVerified: user.emailVerified,
+    createdAt: user.createdAt,
+  };
+}
+
+function isUniqueConstraintError(error: unknown) {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
+
+function sanitizeUsernameBase(value: string) {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 28);
+
+  return normalized || 'google_user';
+}
+
+async function createUniqueUsername(email: string, name?: string) {
+  const emailPrefix = email.split('@')[0] || '';
+  const base = sanitizeUsernameBase(name || emailPrefix);
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const suffix = attempt === 0 ? '' : `_${crypto.randomInt(1000, 9999)}`;
+    const candidate = `${base}${suffix}`.slice(0, 36);
+    const existing = await prisma.user.findUnique({
+      where: { username: candidate },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      return candidate;
+    }
+  }
+
+  return `google_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+}
+
+async function fetchGoogleProfile(accessToken: string): Promise<GoogleProfile> {
+  const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Google rejected access token: ${response.status}`);
+  }
+
+  return (await response.json()) as GoogleProfile;
+}
+
+function createVerificationState(email: string) {
+  const code = createVerificationCode();
+  const codeHash = hashVerificationCode(email, code);
+  const expiresAt = getVerificationExpiry();
+  const sentAt = new Date();
+
+  return { code, codeHash, expiresAt, sentAt };
+}
+
+async function deleteExpiredPendingRegistrations() {
+  await prisma.pendingRegistration.deleteMany({
+    where: {
+      verificationExpiresAt: {
+        lt: new Date(),
+      },
+    },
+  });
+}
+
+async function issueUserVerificationCode(user: { id: string; email: string; username: string }) {
+  const { code, codeHash, expiresAt, sentAt } = createVerificationState(user.email);
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      emailVerificationCodeHash: codeHash,
+      emailVerificationExpiresAt: expiresAt,
+      emailVerificationLastSentAt: sentAt,
+    },
+  });
+
+  return sendVerificationEmail({
+    email: user.email,
+    username: user.username,
+    code,
+  });
+}
+
+async function issuePendingRegistrationCode(pending: {
+  id: string;
+  email: string;
+  username: string;
+}) {
+  const { code, codeHash, expiresAt, sentAt } = createVerificationState(pending.email);
+
+  await prisma.pendingRegistration.update({
+    where: { id: pending.id },
+    data: {
+      verificationCodeHash: codeHash,
+      verificationExpiresAt: expiresAt,
+      verificationLastSentAt: sentAt,
+    },
+  });
+
+  return sendVerificationEmail({
+    email: pending.email,
+    username: pending.username,
+    code,
+  });
+}
+
 export const register = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { username, email, password, fullName } = req.body;
+    const username = normalizeUsername(req.body.username);
+    const email = normalizeEmail(req.body.email);
+    const fullName = typeof req.body.fullName === 'string' ? req.body.fullName.trim() : undefined;
+    const password = typeof req.body.password === 'string' ? req.body.password : '';
 
-    // Validate cơ bản
     if (!username || !email || !password) {
-      res.status(400).json({ message: 'Vui lòng điền đủ username, email và password!' });
+      res.status(400).json({ message: 'Username, email, and password are required.' });
       return;
     }
 
-    // Kiểm tra xem email hoặc username đã tồn tại chưa
+    if (!isValidEmail(email)) {
+      res.status(400).json({ message: 'Please enter a valid email address.' });
+      return;
+    }
+
+    if (password.length < 6) {
+      res.status(400).json({ message: 'Password must be at least 6 characters.' });
+      return;
+    }
+
+    await deleteExpiredPendingRegistrations();
+
     const existingUser = await prisma.user.findFirst({
       where: {
-        OR: [
-          { email },
-          { username }
-        ]
-      }
+        OR: [{ email }, { username }],
+      },
+      select: { email: true, username: true },
     });
 
-    if (existingUser) {
-      res.status(400).json({ message: 'Email hoặc Username đã được sử dụng!' });
+    if (existingUser?.email === email) {
+      res.status(409).json({ message: 'This email is already registered.' });
       return;
     }
 
-    // Mã hóa mật khẩu (Băm 10 vòng cho an toàn)
+    if (existingUser?.username === username) {
+      res.status(409).json({ message: 'This username is already taken.' });
+      return;
+    }
+
+    const pendingWithUsername = await prisma.pendingRegistration.findUnique({
+      where: { username },
+      select: { email: true },
+    });
+
+    if (pendingWithUsername && pendingWithUsername.email !== email) {
+      res.status(409).json({
+        message: 'This username is waiting for email verification. Please choose another username.',
+      });
+      return;
+    }
+
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
+    const { code, codeHash, expiresAt, sentAt } = createVerificationState(email);
 
-    // Lưu User mới vào Database
-    const newUser = await prisma.user.create({
-      data: {
+    await prisma.pendingRegistration.upsert({
+      where: { email },
+      create: {
         username,
         email,
-        passwordHash, // Lưu pass đã mã hóa, tuyệt đối không lưu pass thật
-        fullName
-      }
+        passwordHash,
+        fullName,
+        verificationCodeHash: codeHash,
+        verificationExpiresAt: expiresAt,
+        verificationLastSentAt: sentAt,
+      },
+      update: {
+        username,
+        passwordHash,
+        fullName,
+        verificationCodeHash: codeHash,
+        verificationExpiresAt: expiresAt,
+        verificationLastSentAt: sentAt,
+      },
     });
 
-    res.status(201).json({
-      message: 'Đăng ký tài khoản thành công!',
-      user: {
-        id: newUser.id,
-        username: newUser.username,
-        email: newUser.email,
-        fullName: newUser.fullName,
-        createdAt: newUser.createdAt
-      } // Trả về thông tin cơ bản, giấu passwordHash đi
-    });
+    try {
+      const delivery = await sendVerificationEmail({
+        email,
+        username,
+        code,
+      });
+
+      res.status(201).json({
+        message: 'Registration is pending. Please verify your email.',
+        requiresEmailVerification: true,
+        email,
+        emailDeliveryFailed: false,
+        verificationDeliveryMode: delivery.deliveryMode,
+      });
+      return;
+    } catch (emailError) {
+      console.error('Verification email delivery failed:', emailError);
+      await prisma.pendingRegistration.deleteMany({ where: { email } });
+      res.status(503).json({
+        message:
+          'Could not send the verification email. Please configure the email provider and try again.',
+        emailDeliveryFailed: true,
+      });
+      return;
+    }
   } catch (error) {
-    console.error("Lỗi Register:", error);
-    res.status(500).json({ message: 'Lỗi server khi đăng ký.' });
+    console.error('Register error:', error);
+    if (isUniqueConstraintError(error)) {
+      res.status(409).json({ message: 'Email or username is already registered.' });
+      return;
+    }
+    res.status(500).json({ message: 'Server error while registering.' });
   }
 };
 
-// 2. ĐĂNG NHẬP (LOGIN)
-export const login = async (req: Request, res: Response): Promise<void> => {
+export const verifyEmail = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { email, password } = req.body;
+    const email = normalizeEmail(req.body.email);
+    const code = typeof req.body.code === 'string' ? req.body.code.trim() : '';
 
-    if (!email || !password) {
-      res.status(400).json({ message: 'Vui lòng nhập email và mật khẩu!' });
+    if (!email || !code) {
+      res.status(400).json({ message: 'Email and verification code are required.' });
       return;
     }
 
-    // Tìm user theo email
+    const attemptKey = `${email}:${req.ip || 'unknown'}`;
+    const rateLimit = consumeRateLimit(verifyAttempts, attemptKey, 5, VERIFY_WINDOW_MS);
+    if (!rateLimit.allowed) {
+      res.status(429).json({
+        message: `Too many verification attempts. Try again in ${rateLimit.retryAfterSeconds} seconds.`,
+      });
+      return;
+    }
+
+    const pendingRegistration = await prisma.pendingRegistration.findUnique({
+      where: { email },
+    });
+    const incomingHash = hashVerificationCode(email, code);
+
+    if (pendingRegistration) {
+      if (pendingRegistration.verificationExpiresAt.getTime() < Date.now()) {
+        res.status(400).json({ message: 'Verification code expired. Please request a new code.' });
+        return;
+      }
+
+      if (incomingHash !== pendingRegistration.verificationCodeHash) {
+        res.status(400).json({ message: 'Invalid verification code.' });
+        return;
+      }
+
+      const existingUser = await prisma.user.findFirst({
+        where: {
+          OR: [{ email }, { username: pendingRegistration.username }],
+        },
+        select: { email: true, username: true },
+      });
+
+      if (existingUser?.email === email) {
+        res.status(409).json({ message: 'This email is already registered.' });
+        return;
+      }
+
+      if (existingUser?.username === pendingRegistration.username) {
+        res.status(409).json({ message: 'This username is already taken.' });
+        return;
+      }
+
+      const verifiedUser = await prisma.$transaction(async (tx) => {
+        const createdUser = await tx.user.create({
+          data: {
+            username: pendingRegistration.username,
+            email: pendingRegistration.email,
+            passwordHash: pendingRegistration.passwordHash,
+            fullName: pendingRegistration.fullName,
+            avatarUrl: DEFAULT_USER_AVATAR_URL,
+            emailVerified: true,
+            emailVerifiedAt: new Date(),
+            emailVerificationCodeHash: null,
+            emailVerificationExpiresAt: null,
+            emailVerificationLastSentAt: null,
+          },
+        });
+
+        await tx.pendingRegistration.delete({
+          where: { id: pendingRegistration.id },
+        });
+
+        return createdUser;
+      });
+
+      const token = createAuthToken(verifiedUser.id);
+      clearRateLimit(verifyAttempts, attemptKey);
+      res.status(200).json({
+        message: 'Email verified successfully.',
+        token,
+        user: toSafeUser(verifiedUser),
+      });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      res.status(400).json({ message: 'Invalid verification code.' });
+      return;
+    }
+
+    if (user.emailVerified) {
+      const token = createAuthToken(user.id);
+      res.status(200).json({
+        message: 'Email is already verified.',
+        token,
+        user: toSafeUser(user),
+      });
+      return;
+    }
+
+    if (
+      !user.emailVerificationCodeHash ||
+      !user.emailVerificationExpiresAt ||
+      user.emailVerificationExpiresAt.getTime() < Date.now()
+    ) {
+      res.status(400).json({ message: 'Verification code expired. Please request a new code.' });
+      return;
+    }
+
+    if (incomingHash !== user.emailVerificationCodeHash) {
+      res.status(400).json({ message: 'Invalid verification code.' });
+      return;
+    }
+
+    const verifiedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerified: true,
+        emailVerifiedAt: new Date(),
+        emailVerificationCodeHash: null,
+        emailVerificationExpiresAt: null,
+        emailVerificationLastSentAt: null,
+      },
+    });
+
+    const token = createAuthToken(verifiedUser.id);
+    clearRateLimit(verifyAttempts, attemptKey);
+    res.status(200).json({
+      message: 'Email verified successfully.',
+      token,
+      user: toSafeUser(verifiedUser),
+    });
+  } catch (error) {
+    console.error('Verify email error:', error);
+    res.status(500).json({ message: 'Server error while verifying email.' });
+  }
+};
+
+export const resendVerificationCode = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const email = normalizeEmail(req.body.email);
+    if (!email) {
+      res.status(400).json({ message: 'Email is required.' });
+      return;
+    }
+
+    const attemptKey = `${email}:${req.ip || 'unknown'}`;
+    const rateLimit = consumeRateLimit(resendAttempts, attemptKey, 3, RESEND_WINDOW_MS);
+    if (!rateLimit.allowed) {
+      res.status(429).json({
+        message: `Too many resend requests. Try again in ${rateLimit.retryAfterSeconds} seconds.`,
+      });
+      return;
+    }
+
+    const pendingRegistration = await prisma.pendingRegistration.findUnique({
+      where: { email },
+    });
+
+    if (pendingRegistration) {
+      if (
+        pendingRegistration.verificationLastSentAt &&
+        Date.now() - pendingRegistration.verificationLastSentAt.getTime() < RESEND_COOLDOWN_MS
+      ) {
+        const retryAfterSeconds = Math.ceil(
+          (RESEND_COOLDOWN_MS -
+            (Date.now() - pendingRegistration.verificationLastSentAt.getTime())) /
+            1000,
+        );
+        res.status(429).json({
+          message: `Please wait ${retryAfterSeconds} seconds before requesting another code.`,
+        });
+        return;
+      }
+
+      const delivery = await issuePendingRegistrationCode(pendingRegistration);
+      res.status(200).json({
+        message: 'A new verification code has been sent.',
+        verificationDeliveryMode: delivery.deliveryMode,
+      });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      res.status(200).json({ message: 'If the account exists, a new code has been sent.' });
+      return;
+    }
+
+    if (user.emailVerified) {
+      res.status(200).json({ message: 'This email is already verified.' });
+      return;
+    }
+
+    if (
+      user.emailVerificationLastSentAt &&
+      Date.now() - user.emailVerificationLastSentAt.getTime() < RESEND_COOLDOWN_MS
+    ) {
+      const retryAfterSeconds = Math.ceil(
+        (RESEND_COOLDOWN_MS - (Date.now() - user.emailVerificationLastSentAt.getTime())) / 1000,
+      );
+      res.status(429).json({
+        message: `Please wait ${retryAfterSeconds} seconds before requesting another code.`,
+      });
+      return;
+    }
+
+    const delivery = await issueUserVerificationCode(user);
+    res.status(200).json({
+      message: 'A new verification code has been sent.',
+      verificationDeliveryMode: delivery.deliveryMode,
+    });
+  } catch (error) {
+    console.error('Resend verification code error:', error);
+    res.status(500).json({ message: 'Could not send verification code right now.' });
+  }
+};
+
+export const login = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const email = normalizeEmail(req.body.email);
+    const password = typeof req.body.password === 'string' ? req.body.password : '';
+
+    if (!email || !password) {
+      res.status(400).json({ message: 'Email and password are required.' });
+      return;
+    }
+
+    const attemptKey = `${email}:${req.ip || 'unknown'}`;
+    const rateLimit = consumeRateLimit(loginAttempts, attemptKey, 10, LOGIN_WINDOW_MS);
+    if (!rateLimit.allowed) {
+      res.status(429).json({
+        message: `Too many login attempts. Try again in ${rateLimit.retryAfterSeconds} seconds.`,
+      });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({ where: { email } });
+
+    if (!user) {
+      const pendingRegistration = await prisma.pendingRegistration.findUnique({
+        where: { email },
+        select: { email: true },
+      });
+
+      if (pendingRegistration) {
+        res.status(403).json({
+          code: 'EMAIL_NOT_VERIFIED',
+          message: 'Please verify your email before logging in.',
+          email: pendingRegistration.email,
+        });
+        return;
+      }
+
+      res.status(401).json({ message: 'Email or password is incorrect.' });
+      return;
+    }
+
+    const isMatch = await bcrypt.compare(password, user.passwordHash);
+    if (!isMatch) {
+      res.status(401).json({ message: 'Email or password is incorrect.' });
+      return;
+    }
+
+    if (!user.emailVerified) {
+      res.status(403).json({
+        code: 'EMAIL_NOT_VERIFIED',
+        message: 'Please verify your email before logging in.',
+        email: user.email,
+      });
+      return;
+    }
+
+    const token = createAuthToken(user.id);
+    clearRateLimit(loginAttempts, attemptKey);
+
+    res.status(200).json({
+      message: 'Login successful.',
+      token,
+      user: toSafeUser(user),
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ message: 'Server error while logging in.' });
+  }
+};
+
+export const googleLogin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const accessToken = typeof req.body.accessToken === 'string' ? req.body.accessToken : '';
+    if (!accessToken) {
+      res.status(400).json({ message: 'Google access token is required.' });
+      return;
+    }
+
+    const attemptKey = `google:${req.ip || 'unknown'}`;
+    const rateLimit = consumeRateLimit(
+      googleLoginAttempts,
+      attemptKey,
+      20,
+      GOOGLE_LOGIN_WINDOW_MS,
+    );
+    if (!rateLimit.allowed) {
+      res.status(429).json({
+        message: `Too many Google login attempts. Try again in ${rateLimit.retryAfterSeconds} seconds.`,
+      });
+      return;
+    }
+
+    const profile = await fetchGoogleProfile(accessToken);
+    const email = normalizeEmail(profile.email);
+
+    if (!profile.sub || !email || !profile.email_verified || !isValidEmail(email)) {
+      res.status(401).json({ message: 'Google account email could not be verified.' });
+      return;
+    }
+
+    let user = await prisma.user.findUnique({ where: { email } });
+
+    if (user) {
+      if (!user.emailVerified) {
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            emailVerified: true,
+            emailVerifiedAt: new Date(),
+            emailVerificationCodeHash: null,
+            emailVerificationExpiresAt: null,
+            emailVerificationLastSentAt: null,
+          },
+        });
+      }
+
+      await prisma.pendingRegistration.deleteMany({ where: { email } });
+    } else {
+      const pendingRegistration = await prisma.pendingRegistration.findUnique({
+        where: { email },
+      });
+
+      if (pendingRegistration) {
+        const usernameTaken = await prisma.user.findUnique({
+          where: { username: pendingRegistration.username },
+          select: { id: true },
+        });
+        const username = usernameTaken
+          ? await createUniqueUsername(email, profile.name || pendingRegistration.username)
+          : pendingRegistration.username;
+
+        user = await prisma.$transaction(async (tx) => {
+          const createdUser = await tx.user.create({
+            data: {
+              username,
+              email,
+              passwordHash: pendingRegistration.passwordHash,
+              fullName: pendingRegistration.fullName || profile.name?.trim() || username,
+              avatarUrl: profile.picture || DEFAULT_USER_AVATAR_URL,
+              emailVerified: true,
+              emailVerifiedAt: new Date(),
+            },
+          });
+
+          await tx.pendingRegistration.delete({
+            where: { id: pendingRegistration.id },
+          });
+
+          return createdUser;
+        });
+      } else {
+        const username = await createUniqueUsername(email, profile.name);
+        const randomPasswordHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+
+        user = await prisma.user.create({
+          data: {
+            username,
+            email,
+            passwordHash: randomPasswordHash,
+            fullName: profile.name?.trim() || username,
+            avatarUrl: profile.picture || DEFAULT_USER_AVATAR_URL,
+            emailVerified: true,
+            emailVerifiedAt: new Date(),
+          },
+        });
+      }
+    }
+
+    const token = createAuthToken(user.id);
+    clearRateLimit(googleLoginAttempts, attemptKey);
+
+    res.status(200).json({
+      message: 'Google login successful.',
+      token,
+      user: toSafeUser(user),
+    });
+  } catch (error) {
+    console.error('Google login error:', error);
+    res.status(401).json({ message: 'Google login failed. Please try again.' });
+  }
+};
+
+export const changePassword = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    const { oldPassword, newPassword } = req.body;
+
+    if (!userId) {
+      res.status(401).json({ message: 'Authentication is required.' });
+      return;
+    }
+
+    if (!oldPassword || !newPassword) {
+      res.status(400).json({ message: 'Old password and new password are required.' });
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      res.status(400).json({ message: 'New password must be at least 6 characters.' });
+      return;
+    }
+
     const user = await prisma.user.findUnique({
-      where: { email }
+      where: { id: userId },
     });
 
     if (!user) {
-      res.status(401).json({ message: 'Email hoặc mật khẩu không chính xác!' });
+      res.status(404).json({ message: 'User not found.' });
       return;
     }
 
-    // So sánh mật khẩu người dùng nhập với hash trong DB
-    const isMatch = await bcrypt.compare(password, user.passwordHash);
-    
+    const isMatch = await bcrypt.compare(oldPassword, user.passwordHash);
     if (!isMatch) {
-      res.status(401).json({ message: 'Email hoặc mật khẩu không chính xác!' });
+      res.status(400).json({ message: 'Current password is incorrect.' });
       return;
     }
 
-    // Tạo JWT Token (Nhét đúng cái userId vào đây để middleware đọc được)
-    const token = jwt.sign(
-      { userId: user.id }, 
-      JWT_SECRET,
-      { expiresIn: '30d' } // App điện thoại thường để token sống lâu 1 chút (30 ngày)
-    );
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(newPassword, salt);
 
-    res.status(200).json({
-      message: 'Đăng nhập thành công!',
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        fullName: user.fullName,
-        avatarUrl: user.avatarUrl,
-        followerCount: user.followerCount,
-        followingCount: user.followingCount,
-        trackCount: user.trackCount
-      }
+    await prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
     });
+
+    res.status(200).json({ message: 'Password changed successfully.' });
   } catch (error) {
-    console.error("Lỗi Login:", error);
-    res.status(500).json({ message: 'Lỗi server khi đăng nhập.' });
+    console.error('Change password error:', error);
+    res.status(500).json({ message: 'Server error while changing password.' });
   }
 };

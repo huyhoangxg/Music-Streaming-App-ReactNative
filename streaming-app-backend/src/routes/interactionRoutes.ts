@@ -1,37 +1,28 @@
 import { Router } from 'express';
-import { 
-  toggleLike, 
-  addComment, 
-  getSongComments, 
-  toggleRepost 
+import {
+  addComment,
+  getMyLikedSongs,
+  getMyReposts,
+  getSongComments,
+  getSongInteractionStatus,
+  toggleLike,
+  toggleRepost,
 } from '../controllers/interactionController';
 import { authenticateToken } from '../middlewares/authMiddleware';
+import { likeSong, unlikeSong } from '../modules/interactions/like.controller';
+import { recordPlayHistory } from '../modules/interactions/playHistory.controller';
 
 const router = Router();
 
-// ==========================================
-// NHÓM 1: BẮT BUỘC ĐĂNG NHẬP (CÓ TOKEN)
-// ==========================================
-
-// Thả tim / Hủy thả tim bài hát
-// Endpoint: POST /api/interactions/like/:songId
-router.post('/like/:songId', authenticateToken, toggleLike);
-
-// Viết bình luận mới vào bài hát
-// Endpoint: POST /api/interactions/comment/:songId
-router.post('/comment/:songId', authenticateToken, addComment);
-
-// Chia sẻ / Gỡ chia sẻ bài hát (Repost)
-// Endpoint: POST /api/interactions/repost/:songId
-router.post('/repost/:songId', authenticateToken, toggleRepost);
-
-
-// ==========================================
-// NHÓM 2: PUBLIC (KHÔNG CẦN ĐĂNG NHẬP)
-// ==========================================
-
-// Lấy danh sách bình luận của 1 bài hát
-// Endpoint: GET /api/interactions/comment/:songId
-router.get('/comment/:songId', getSongComments);
+router.post('/play-history', authenticateToken, recordPlayHistory);
+router.post('/like', authenticateToken, likeSong);
+router.delete('/like/:songId', authenticateToken, unlikeSong);
+router.get('/my-reposts', authenticateToken, getMyReposts);
+router.get('/my-likes', authenticateToken, getMyLikedSongs);
+router.post('/:songId/like', authenticateToken, toggleLike);
+router.post('/:songId/repost', authenticateToken, toggleRepost);
+router.post('/:songId/comment', authenticateToken, addComment);
+router.get('/:songId/comment', getSongComments);
+router.get('/:songId/my-status', authenticateToken, getSongInteractionStatus);
 
 export default router;
