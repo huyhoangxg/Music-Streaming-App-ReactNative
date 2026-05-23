@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from pathlib import Path
+import logging
 import threading
+import time
 
 import numpy as np
 
@@ -21,6 +23,8 @@ except Exception as error:  # pragma: no cover - optional dependency at runtime
     TensorflowPredictEffnetDiscogs = None
     ESSENTIA_IMPORT_ERROR = str(error)
 
+logger = logging.getLogger("uvicorn.error")
+
 
 @dataclass(slots=True)
 class RawGenreInferenceResult:
@@ -39,6 +43,7 @@ class GenreInferenceService:
         self._ensure_runtime_available()
 
         with self._inference_lock:
+            started_at = time.perf_counter()
             warning_patterns = (
                 ["No network created, or last created network has been deleted"]
                 if settings.essentia_suppress_network_warnings
@@ -47,12 +52,26 @@ class GenreInferenceService:
 
             with filter_native_stderr_lines(warning_patterns):
                 bundle = model_registry.get_genre_model_bundle()
+                logger.info("Genre inference step: load_audio path=%s", local_audio_path)
                 audio = self.load_audio(local_audio_path)
+                logger.info(
+                    "Genre inference step: extract_embeddings samples=%s",
+                    audio.shape[0],
+                )
                 embeddings = self.extract_embeddings(audio, bundle)
+                logger.info(
+                    "Genre inference step: predict_genres embeddings=%s",
+                    embeddings.shape,
+                )
                 predictions = self.predict_genres(embeddings, bundle)
                 clip_scores = self._collapse_predictions(
                     predictions,
                     expected_size=len(bundle.class_labels),
+                )
+                logger.info(
+                    "Genre inference complete: labels=%s elapsed=%.2fs",
+                    len(bundle.class_labels),
+                    time.perf_counter() - started_at,
                 )
 
                 return RawGenreInferenceResult(
@@ -71,14 +90,14 @@ class GenreInferenceService:
     def load_audio(self, local_audio_path: str | Path) -> np.ndarray:
         audio = self._build_audio_loader(local_audio_path)()
 
-        audio_array = np.asarray(audio, dtype=float)
+        audio_array = np.asarray(audio, dtype=np.float32)
         if audio_array.size == 0:
             raise ValueError(f"Audio loader returned an empty waveform for {local_audio_path}.")
 
         return audio_array
 
     def extract_embeddings(self, audio: np.ndarray, bundle) -> np.ndarray:
-        embeddings = self._get_embedding_model(bundle)(audio)
+        embeddings = self._build_embedding_model(bundle)(audio)
         embeddings_array = np.asarray(embeddings, dtype=float)
 
         if embeddings_array.size == 0:
@@ -121,14 +140,11 @@ class GenreInferenceService:
                 "Essentia runtime is unavailable. Missing: " + ", ".join(missing_symbols)
             )
 
-    def _get_embedding_model(self, bundle):
-        if self._embedding_model is None:
-            self._embedding_model = TensorflowPredictEffnetDiscogs(
-                graphFilename=str(bundle.embedding_graph_path),
-                output=settings.essentia_embedding_output_layer,
-            )
-
-        return self._embedding_model
+    def _build_embedding_model(self, bundle):
+        return TensorflowPredictEffnetDiscogs(
+            graphFilename=str(bundle.embedding_graph_path),
+            output=settings.essentia_embedding_output_layer,
+        )
 
     def _get_classifier_model(self, bundle):
         if self._classifier_model is None:

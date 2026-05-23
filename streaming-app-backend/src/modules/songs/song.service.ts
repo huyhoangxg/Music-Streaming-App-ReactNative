@@ -274,6 +274,97 @@ function serializeSong(song: Song) {
   };
 }
 
+async function analyzeAndPersistSongGenre(createdSong: Song) {
+  try {
+    const aiResult = await analyzeSong({
+      songId: createdSong.id,
+      audioUrl: createdSong.audioUrl,
+      title: createdSong.title,
+    });
+
+    const aiGenres = normalizeAiGenres(aiResult.genres);
+    const rawAiPrimaryGenre = normalizeGenre(aiResult.primaryGenre) ?? aiGenres[0]?.name ?? null;
+    const confidence = normalizeConfidence(aiResult.confidence);
+    const aiPrimaryGenre = aiResult.status === 'success' ? rawAiPrimaryGenre : null;
+    const finalGenreDecision = chooseFinalGenre({
+      uploaderGenre: createdSong.uploaderGenre,
+      aiPrimaryGenre,
+      confidence,
+    });
+    const persistedGenres =
+      finalGenreDecision.genreSource === 'ai'
+        ? buildPersistedAiGenres(aiGenres, aiPrimaryGenre, confidence)
+        : buildFallbackGenres(createdSong.uploaderGenre);
+
+    await prisma.$transaction(async (tx) => {
+      const song = await tx.song.update({
+        where: { id: createdSong.id },
+        data: {
+          aiPrimaryGenre,
+          aiGenresJson:
+            aiGenres.length > 0
+              ? (aiGenres as unknown as Prisma.InputJsonValue)
+              : Prisma.DbNull,
+          finalPrimaryGenre: finalGenreDecision.finalPrimaryGenre,
+          genreSource: finalGenreDecision.genreSource,
+          genreConfidence: confidence,
+          aiStatus: aiResult.status,
+          aiErrorMessage: aiResult.errorMessage ?? null,
+          aiModelVersion: aiResult.modelVersion ?? null,
+        },
+      });
+
+      await persistSongGenres(tx, song.id, persistedGenres);
+    });
+
+    console.info(
+      `Song genre saved: title="${createdSong.title}", songId=${createdSong.id}, ` +
+        `ai=${aiPrimaryGenre ?? 'none'}, final=${finalGenreDecision.finalPrimaryGenre}, ` +
+        `source=${finalGenreDecision.genreSource}, confidence=${confidence ?? 'n/a'}, ` +
+        `top=${formatGenreScores(aiGenres)}`,
+    );
+  } catch (error) {
+    console.warn(`AI analysis failed for song ${createdSong.id}: ${formatAiError(error)}`);
+
+    try {
+      const fallbackDecision = chooseFinalGenre({
+        uploaderGenre: createdSong.uploaderGenre,
+        aiPrimaryGenre: null,
+        confidence: null,
+      });
+      await prisma.$transaction(async (tx) => {
+        const song = await tx.song.update({
+          where: { id: createdSong.id },
+          data: {
+            aiPrimaryGenre: null,
+            aiGenresJson: Prisma.DbNull,
+            finalPrimaryGenre: fallbackDecision.finalPrimaryGenre,
+            genreSource: fallbackDecision.genreSource,
+            genreConfidence: null,
+            aiStatus: 'failed',
+            aiErrorMessage: formatAiError(error) || 'AI analyze failed.',
+            aiModelVersion: null,
+          },
+        });
+
+        await persistSongGenres(tx, song.id, buildFallbackGenres(createdSong.uploaderGenre));
+      });
+    } catch (fallbackError) {
+      console.error(`Fallback song update failed for song ${createdSong.id}:`, fallbackError);
+    }
+  }
+}
+
+let genreAnalysisQueue: Promise<void> = Promise.resolve();
+
+function enqueueSongGenreAnalysis(song: Song) {
+  genreAnalysisQueue = genreAnalysisQueue
+    .then(() => analyzeAndPersistSongGenre(song))
+    .catch((error) => {
+      console.error(`Queued AI analysis failed for song ${song.id}:`, error);
+    });
+}
+
 export const songUploadService = {
   async uploadSong({
     title,
@@ -383,92 +474,8 @@ export const songUploadService = {
       throw new AppError(500, 'Failed to create song record.', error);
     }
 
-    try {
-      const aiResult = await analyzeSong({
-        songId: createdSong.id,
-        audioUrl: createdSong.audioUrl,
-        title: createdSong.title,
-      });
+    enqueueSongGenreAnalysis(createdSong);
 
-      const aiGenres = normalizeAiGenres(aiResult.genres);
-      const rawAiPrimaryGenre = normalizeGenre(aiResult.primaryGenre) ?? aiGenres[0]?.name ?? null;
-      const confidence = normalizeConfidence(aiResult.confidence);
-      const aiPrimaryGenre = aiResult.status === 'success' ? rawAiPrimaryGenre : null;
-      const finalGenreDecision = chooseFinalGenre({
-        uploaderGenre: createdSong.uploaderGenre,
-        aiPrimaryGenre,
-        confidence,
-      });
-      const persistedGenres =
-        finalGenreDecision.genreSource === 'ai'
-          ? buildPersistedAiGenres(aiGenres, aiPrimaryGenre, confidence)
-          : buildFallbackGenres(createdSong.uploaderGenre);
-
-      const updatedSong = await prisma.$transaction(async (tx) => {
-        const song = await tx.song.update({
-          where: { id: createdSong.id },
-          data: {
-            aiPrimaryGenre,
-            aiGenresJson:
-              aiGenres.length > 0
-                ? (aiGenres as unknown as Prisma.InputJsonValue)
-                : Prisma.DbNull,
-            finalPrimaryGenre: finalGenreDecision.finalPrimaryGenre,
-            genreSource: finalGenreDecision.genreSource,
-            genreConfidence: confidence,
-            aiStatus: aiResult.status,
-            aiErrorMessage: aiResult.errorMessage ?? null,
-            aiModelVersion: aiResult.modelVersion ?? null,
-          },
-        });
-
-        await persistSongGenres(tx, song.id, persistedGenres);
-
-        return song;
-      });
-
-      console.info(
-        `Song genre saved: title="${createdSong.title}", songId=${createdSong.id}, ` +
-          `ai=${aiPrimaryGenre ?? 'none'}, final=${finalGenreDecision.finalPrimaryGenre}, ` +
-          `source=${finalGenreDecision.genreSource}, confidence=${confidence ?? 'n/a'}, ` +
-          `top=${formatGenreScores(aiGenres)}`,
-      );
-
-      return serializeSong(updatedSong);
-    } catch (error) {
-      console.warn(`AI analysis failed for song ${createdSong.id}: ${formatAiError(error)}`);
-
-      try {
-        const fallbackDecision = chooseFinalGenre({
-          uploaderGenre: createdSong.uploaderGenre,
-          aiPrimaryGenre: null,
-          confidence: null,
-        });
-        const fallbackSong = await prisma.$transaction(async (tx) => {
-          const song = await tx.song.update({
-            where: { id: createdSong.id },
-            data: {
-              aiPrimaryGenre: null,
-              aiGenresJson: Prisma.DbNull,
-              finalPrimaryGenre: fallbackDecision.finalPrimaryGenre,
-              genreSource: fallbackDecision.genreSource,
-              genreConfidence: null,
-              aiStatus: 'failed',
-              aiErrorMessage: formatAiError(error) || 'AI analyze failed.',
-              aiModelVersion: null,
-            },
-          });
-
-          await persistSongGenres(tx, song.id, buildFallbackGenres(createdSong.uploaderGenre));
-
-          return song;
-        });
-
-        return serializeSong(fallbackSong);
-      } catch (fallbackError) {
-        console.error(`Fallback song update failed for song ${createdSong.id}:`, fallbackError);
-        return serializeSong(createdSong);
-      }
-    }
+    return serializeSong(createdSong);
   },
 };
