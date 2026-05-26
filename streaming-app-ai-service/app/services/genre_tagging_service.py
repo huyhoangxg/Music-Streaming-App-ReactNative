@@ -4,7 +4,7 @@ from app.core.model_registry import model_registry
 from app.core.config import settings
 from app.schemas.analyze_schema import AnalyzeSongRequest, AnalyzeSongResponse
 from app.services.audio_loader import download_audio_to_temp_file
-from app.services.genre_inference import genre_inference_service
+from app.services.genre_inference_subprocess import infer_genres_in_subprocess
 from app.services.genre_postprocess import postprocess_genre_scores
 
 logger = logging.getLogger("uvicorn.error")
@@ -49,7 +49,7 @@ class GenreTaggingService:
 
         try:
             with download_audio_to_temp_file(payload.audioUrl) as downloaded_audio:
-                inference_result = genre_inference_service.infer(downloaded_audio.local_path)
+                inference_result = infer_genres_in_subprocess(downloaded_audio.local_path)
 
             processed_result = postprocess_genre_scores(
                 labels=inference_result.labels,

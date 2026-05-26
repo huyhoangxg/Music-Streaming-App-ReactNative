@@ -1,9 +1,11 @@
 streaming-app-backend/node_modules/
 streaming-app-backend/src/generated/prisma
 streaming-app-backend/.env
+streaming-app-backend/.env.backup*
 .history/
 streaming-app-frontend/node_modules/
 streaming-app-frontend/.expo
+streaming-app-frontend/.env
 node_modules
 .expo/
 streaming-app-ai-service/.env

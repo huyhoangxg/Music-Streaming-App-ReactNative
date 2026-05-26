@@ -111,6 +111,13 @@ function chooseFinalGenre(params: {
   const aiPrimaryGenre = normalizeGenre(params.aiPrimaryGenre);
   const confidence = normalizeConfidence(params.confidence);
 
+  if (uploaderGenre === 'Bolero') {
+    return {
+      finalPrimaryGenre: uploaderGenre,
+      genreSource: 'uploader',
+    };
+  }
+
   if (aiPrimaryGenre && confidence !== null && confidence >= MIN_AI_GENRE_CONFIDENCE) {
     return {
       finalPrimaryGenre: aiPrimaryGenre,

@@ -36,23 +36,6 @@ EMBEDDING_MODEL_PATH=./models/discogs-effnet-bs64-1.pb
 EMBEDDING_METADATA_PATH=./models/discogs-effnet-bs64-1.json
 GENRE_MODEL_PATH=./models/mtg_jamendo_genre-discogs-effnet-1.pb
 GENRE_METADATA_PATH=./models/mtg_jamendo_genre-discogs-effnet-1.json
-GENRE_CLASSIFIER_BACKEND=essentia
-```
-
-For a custom classifier trained from the Colab notebook in this repo, switch only the classifier
-head while keeping the same embedding model:
-
-```env
-GENRE_CLASSIFIER_BACKEND=keras
-GENRE_MODEL_PATH=./models/soundwave_genre_classifier.keras
-GENRE_METADATA_PATH=./models/soundwave_genre_classifier.json
-```
-
-If `GENRE_CLASSIFIER_BACKEND=keras` fails with a TensorFlow import error, install TensorFlow in the
-same WSL virtual environment:
-
-```bash
-pip install tensorflow
 ```
 
 ## Run the AI service
@@ -242,6 +225,5 @@ score_v1 =
 
 ## Manual tools kept for demo
 
-- `test_ai.py` for direct Essentia script-level testing
 - `docs/postman/streaming-app-demo.postman_collection.json` for upload, analyze, and recommendation requests
 - `docs/ai-demo-checklist.md` for the defense/demo sequence

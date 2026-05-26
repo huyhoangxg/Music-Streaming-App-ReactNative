@@ -80,13 +80,6 @@ const SettingsScreen = () => {
             <Text style={styles.settingText}>Notifications</Text>
             <MaterialIcons name="keyboard-arrow-right" size={24} color={COLORS.neutralLightGrey} />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.settingItem}
-            onPress={() => navigation.navigate('AudioQuality')}
-          >
-            <Text style={styles.settingText}>Audio quality</Text>
-            <MaterialIcons name="keyboard-arrow-right" size={24} color={COLORS.neutralLightGrey} />
-          </TouchableOpacity>
         </View>
 
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>

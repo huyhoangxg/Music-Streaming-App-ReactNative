@@ -28,6 +28,7 @@ export default function MainTabNavigator() {
           tabBarActiveTintColor: COLORS.accentOrange,
           tabBarInactiveTintColor: COLORS.neutralLightGrey,
           tabBarShowLabel: false,
+          tabBarItemStyle: styles.tabBarItem,
         }}
       >
         <Tab.Screen
@@ -35,7 +36,7 @@ export default function MainTabNavigator() {
           component={HomeScreen}
           options={{
             tabBarIcon: ({ color }) => (
-              <MaterialIcons name="home-filled" size={26} color={color} />
+              <MaterialIcons name="home-filled" size={30} color={color} />
             ),
           }}
         />
@@ -43,7 +44,7 @@ export default function MainTabNavigator() {
           name="SearchTab"
           component={SearchScreen}
           options={{
-            tabBarIcon: ({ color }) => <Ionicons name="search" size={26} color={color} />,
+            tabBarIcon: ({ color }) => <Ionicons name="search" size={30} color={color} />,
           }}
         />
         <Tab.Screen
@@ -52,7 +53,7 @@ export default function MainTabNavigator() {
           options={{
             tabBarIcon: () => (
               <View style={styles.customUploadButton}>
-                <MaterialIcons name="add" size={28} color={COLORS.baseBlack} />
+                <MaterialIcons name="add" size={32} color={COLORS.baseBlack} />
               </View>
             ),
           }}
@@ -62,7 +63,7 @@ export default function MainTabNavigator() {
           component={LibraryScreen}
           options={{
             tabBarIcon: ({ color }) => (
-              <MaterialIcons name="library-music" size={24} color={color} />
+              <MaterialIcons name="library-music" size={29} color={color} />
             ),
           }}
         />
@@ -70,7 +71,7 @@ export default function MainTabNavigator() {
           name="ProfileTab"
           component={ProfileScreen}
           options={{
-            tabBarIcon: ({ color }) => <Feather name="user" size={24} color={color} />,
+            tabBarIcon: ({ color }) => <Feather name="user" size={28} color={color} />,
           }}
         />
       </Tab.Navigator>
@@ -84,16 +85,22 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.tabBarBg,
     borderTopWidth: 0,
     elevation: 0,
-    height: 70,
-    paddingTop: 10,
+    height: 78,
+    paddingTop: 4,
+    paddingBottom: 12,
+  },
+  tabBarItem: {
+    minHeight: 60,
+    paddingTop: 0,
+    paddingBottom: 8,
   },
   customUploadButton: {
-    top: -10,
+    top: -14,
     justifyContent: 'center',
     alignItems: 'center',
-    width: 50,
-    height: 50,
-    borderRadius: 30,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
     backgroundColor: COLORS.accentOrange,
     shadowColor: COLORS.accentOrange,
     shadowOffset: { width: 0, height: 4 },

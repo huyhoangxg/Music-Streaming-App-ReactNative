@@ -18,27 +18,21 @@ import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
 import * as Google from 'expo-auth-session/providers/google';
 import * as WebBrowser from 'expo-web-browser';
+import * as Clipboard from 'expo-clipboard';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  GOOGLE_AUTH_REQUEST_CONFIG,
+  GOOGLE_CLIENT_ID_ENV_NAME,
+  GOOGLE_CLIENT_ID_FOR_PLATFORM,
+  GOOGLE_LOGIN_UNSUPPORTED_REASON,
+} from '../config/googleAuth';
+import { runGoogleDeviceLogin } from '../utils/googleDeviceLogin';
 
 WebBrowser.maybeCompleteAuthSession();
 
 const debuggerHost = Constants.expoConfig?.hostUri;
 const localhost = debuggerHost ? debuggerHost.split(':')[0] : 'localhost';
 const API_URL = `http://${localhost}:5000`;
-const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
-const GOOGLE_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID;
-const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
-const GOOGLE_CLIENT_ID_PLACEHOLDER = 'missing-google-client-id.apps.googleusercontent.com';
-const GOOGLE_CLIENT_ID_FOR_PLATFORM = Platform.select({
-  ios: GOOGLE_IOS_CLIENT_ID,
-  android: GOOGLE_ANDROID_CLIENT_ID,
-  default: GOOGLE_WEB_CLIENT_ID,
-});
-const GOOGLE_CLIENT_ID_ENV_NAME = Platform.select({
-  ios: 'EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID',
-  android: 'EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID',
-  default: 'EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID',
-});
 
 const COLORS = {
   baseBlack: '#000000',
@@ -80,10 +74,8 @@ const LoginScreen = () => {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const navigation = useNavigation<any>();
 
-  const [googleRequest, googleResponse, promptGoogleLogin] = Google.useAuthRequest({
-    clientId: GOOGLE_CLIENT_ID_FOR_PLATFORM || GOOGLE_CLIENT_ID_PLACEHOLDER,
-    scopes: ['openid', 'profile', 'email'],
-  });
+  const [, googleResponse, promptGoogleLogin] =
+    Google.useAuthRequest(GOOGLE_AUTH_REQUEST_CONFIG);
 
   useEffect(() => {
     const completeGoogleLogin = async () => {
@@ -177,6 +169,46 @@ const LoginScreen = () => {
   };
 
   const handleGoogleLogin = async () => {
+    if (GOOGLE_LOGIN_UNSUPPORTED_REASON) {
+      setIsGoogleLoading(true);
+      try {
+        const token = await runGoogleDeviceLogin(API_URL, ({ userCode, verificationUrl }) => {
+          Alert.alert(
+            'Google verification code',
+            `Code: ${userCode}\n\nTap Open Google, enter this code, approve access, then return to SoundWave.`,
+            [
+              {
+                text: 'Copy and open Google',
+                onPress: async () => {
+                  await Clipboard.setStringAsync(userCode);
+                  void WebBrowser.openBrowserAsync(verificationUrl);
+                },
+              },
+              {
+                text: 'Open Google',
+                onPress: () => {
+                  void WebBrowser.openBrowserAsync(verificationUrl);
+                },
+              },
+              { text: 'Cancel', style: 'cancel' },
+            ],
+          );
+        });
+
+        await SecureStore.setItemAsync('userToken', token);
+        navigation.replace('Home');
+      } catch (error: any) {
+        console.log('Google device login error:', error.response?.data || error.message);
+        Alert.alert(
+          'Google login failed',
+          error.response?.data?.message || error.message || 'Could not log in with Google.',
+        );
+      } finally {
+        setIsGoogleLoading(false);
+      }
+      return;
+    }
+
     if (!GOOGLE_CLIENT_ID_FOR_PLATFORM) {
       Alert.alert(
         'Google login is not configured',
@@ -193,13 +225,6 @@ const LoginScreen = () => {
       setIsGoogleLoading(false);
       Alert.alert('Google login failed', 'Could not open Google login.');
     }
-  };
-
-  const handleAppleLogin = () => {
-    Alert.alert(
-      'Coming soon',
-      'Sign in with Apple needs Apple Developer setup before it can be enabled.',
-    );
   };
 
   return (
@@ -233,7 +258,10 @@ const LoginScreen = () => {
               onTextChange={setPassword}
             />
 
-            <TouchableOpacity style={styles.forgotPasswordContainer}>
+            <TouchableOpacity
+              style={styles.forgotPasswordContainer}
+              onPress={() => navigation.navigate('ForgotPassword')}
+            >
               <Text style={styles.forgotPasswordText}>Forgot password?</Text>
             </TouchableOpacity>
           </View>
@@ -253,15 +281,10 @@ const LoginScreen = () => {
           </View>
 
           <View style={styles.socialContainer}>
-            <TouchableOpacity style={styles.socialButton} onPress={handleAppleLogin}>
-              <FontAwesome name="apple" size={20} color={COLORS.whiteText} />
-              <Text style={styles.socialButtonText}>Continue with Apple</Text>
-            </TouchableOpacity>
-
             <TouchableOpacity
               style={[styles.socialButton, isGoogleLoading && { opacity: 0.7 }]}
               onPress={handleGoogleLogin}
-              disabled={isGoogleLoading || !googleRequest}
+              disabled={isGoogleLoading}
             >
               {isGoogleLoading ? (
                 <ActivityIndicator color={COLORS.whiteText} />

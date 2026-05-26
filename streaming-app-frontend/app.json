@@ -2,11 +2,15 @@
   "expo": {
     "name": "my-music-app",
     "slug": "my-music-app",
-    "scheme": "soundwave",
+    "scheme": [
+      "soundwave",
+      "com.soundwave.app"
+    ],
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
+      "bundleIdentifier": "com.soundwave.app",
       "supportsTablet": true,
       "infoPlist": {
         "UIBackgroundModes": [
@@ -15,6 +19,7 @@
       }
     },
     "android": {
+      "package": "com.soundwave.app",
       "permissions": [
         "WAKE_LOCK",
         "FOREGROUND_SERVICE",

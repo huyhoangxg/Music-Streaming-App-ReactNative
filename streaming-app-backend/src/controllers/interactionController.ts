@@ -117,7 +117,99 @@ export const getSongComments = async (req: Request, res: Response): Promise<void
 };
 
 // ==========================================
-// 3b. KIỂM TRA TRẠNG THÁI TƯƠNG TÁC CỦA USER
+// 3b. OWNER-ONLY TRACK INSIGHT LISTS
+// ==========================================
+async function getOwnedSongOrRespond(songId: string, userId: string, res: Response) {
+  const song = await prisma.song.findUnique({
+    where: { id: songId },
+    select: { id: true, userId: true },
+  });
+
+  if (!song) {
+    res.status(404).json({ message: 'Song not found.' });
+    return null;
+  }
+
+  if (song.userId !== userId) {
+    res.status(403).json({ message: 'Only the track owner can view this list.' });
+    return null;
+  }
+
+  return song;
+}
+
+export const getSongLikeUsers = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId as string;
+    const songId = req.params.songId as string;
+
+    if (!userId) {
+      res.status(401).json({ message: 'Authentication required.' });
+      return;
+    }
+
+    const song = await getOwnedSongOrRespond(songId, userId, res);
+    if (!song) {
+      return;
+    }
+
+    const likes = await prisma.like.findMany({
+      where: { songId },
+      include: {
+        user: { select: { id: true, username: true, fullName: true, avatarUrl: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.status(200).json(
+      likes.map((like) => ({
+        createdAt: like.createdAt,
+        user: like.user,
+      })),
+    );
+  } catch (error) {
+    console.error('Error getSongLikeUsers:', error);
+    res.status(500).json({ message: 'Server error while loading likes.' });
+  }
+};
+
+export const getSongRepostUsers = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId as string;
+    const songId = req.params.songId as string;
+
+    if (!userId) {
+      res.status(401).json({ message: 'Authentication required.' });
+      return;
+    }
+
+    const song = await getOwnedSongOrRespond(songId, userId, res);
+    if (!song) {
+      return;
+    }
+
+    const reposts = await prisma.repost.findMany({
+      where: { songId },
+      include: {
+        user: { select: { id: true, username: true, fullName: true, avatarUrl: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.status(200).json(
+      reposts.map((repost) => ({
+        createdAt: repost.createdAt,
+        user: repost.user,
+      })),
+    );
+  } catch (error) {
+    console.error('Error getSongRepostUsers:', error);
+    res.status(500).json({ message: 'Server error while loading reposts.' });
+  }
+};
+
+// ==========================================
+// 3c. KIỂM TRA TRẠNG THÁI TƯƠNG TÁC CỦA USER
 // ==========================================
 export const getSongInteractionStatus = async (req: AuthRequest, res: Response): Promise<void> => {
   try {

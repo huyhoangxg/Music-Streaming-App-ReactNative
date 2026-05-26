@@ -5,6 +5,8 @@ import {
   getMyReposts,
   getSongComments,
   getSongInteractionStatus,
+  getSongLikeUsers,
+  getSongRepostUsers,
   toggleLike,
   toggleRepost,
 } from '../controllers/interactionController';
@@ -19,6 +21,8 @@ router.post('/like', authenticateToken, likeSong);
 router.delete('/like/:songId', authenticateToken, unlikeSong);
 router.get('/my-reposts', authenticateToken, getMyReposts);
 router.get('/my-likes', authenticateToken, getMyLikedSongs);
+router.get('/:songId/likes', authenticateToken, getSongLikeUsers);
+router.get('/:songId/reposts', authenticateToken, getSongRepostUsers);
 router.post('/:songId/like', authenticateToken, toggleLike);
 router.post('/:songId/repost', authenticateToken, toggleRepost);
 router.post('/:songId/comment', authenticateToken, addComment);

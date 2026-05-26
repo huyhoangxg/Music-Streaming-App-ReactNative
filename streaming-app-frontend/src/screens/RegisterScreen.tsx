@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -16,7 +16,19 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
+import * as Google from 'expo-auth-session/providers/google';
+import * as WebBrowser from 'expo-web-browser';
+import * as Clipboard from 'expo-clipboard';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  GOOGLE_AUTH_REQUEST_CONFIG,
+  GOOGLE_CLIENT_ID_ENV_NAME,
+  GOOGLE_CLIENT_ID_FOR_PLATFORM,
+  GOOGLE_LOGIN_UNSUPPORTED_REASON,
+} from '../config/googleAuth';
+import { runGoogleDeviceLogin } from '../utils/googleDeviceLogin';
+
+WebBrowser.maybeCompleteAuthSession();
 
 const debuggerHost = Constants.expoConfig?.hostUri;
 const localhost = debuggerHost ? debuggerHost.split(':')[0] : 'localhost';
@@ -74,8 +86,113 @@ const RegisterScreen = () => {
   const [verificationCode, setVerificationCode] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
   const navigation = useNavigation<any>();
+
+  const [, googleResponse, promptGoogleLogin] =
+    Google.useAuthRequest(GOOGLE_AUTH_REQUEST_CONFIG);
+
+  useEffect(() => {
+    const completeGoogleLogin = async () => {
+      if (googleResponse?.type !== 'success') {
+        if (googleResponse?.type === 'error') {
+          Alert.alert('Google login failed', 'Could not finish Google login.');
+          setIsGoogleLoading(false);
+        }
+        return;
+      }
+
+      const accessToken = googleResponse.authentication?.accessToken;
+      if (!accessToken) {
+        Alert.alert('Google login failed', 'Google did not return an access token.');
+        setIsGoogleLoading(false);
+        return;
+      }
+
+      try {
+        const response = await axios.post(`${API_URL}/api/auth/google`, { accessToken });
+        const token = response.data.token;
+
+        if (!token) {
+          Alert.alert('Google login failed', 'Server did not return a session token.');
+          return;
+        }
+
+        await SecureStore.setItemAsync('userToken', token);
+        navigation.replace('Home');
+      } catch (error: any) {
+        console.log('Google login error:', error.response?.data || error.message);
+        Alert.alert(
+          'Google login failed',
+          error.response?.data?.message || 'Could not log in with Google right now.',
+        );
+      } finally {
+        setIsGoogleLoading(false);
+      }
+    };
+
+    void completeGoogleLogin();
+  }, [googleResponse, navigation]);
+
+  const handleGoogleLogin = async () => {
+    if (GOOGLE_LOGIN_UNSUPPORTED_REASON) {
+      setIsGoogleLoading(true);
+      try {
+        const token = await runGoogleDeviceLogin(API_URL, ({ userCode, verificationUrl }) => {
+          Alert.alert(
+            'Google verification code',
+            `Code: ${userCode}\n\nTap Open Google, enter this code, approve access, then return to SoundWave.`,
+            [
+              {
+                text: 'Copy and open Google',
+                onPress: async () => {
+                  await Clipboard.setStringAsync(userCode);
+                  void WebBrowser.openBrowserAsync(verificationUrl);
+                },
+              },
+              {
+                text: 'Open Google',
+                onPress: () => {
+                  void WebBrowser.openBrowserAsync(verificationUrl);
+                },
+              },
+              { text: 'Cancel', style: 'cancel' },
+            ],
+          );
+        });
+
+        await SecureStore.setItemAsync('userToken', token);
+        navigation.replace('Home');
+      } catch (error: any) {
+        console.log('Google device login error:', error.response?.data || error.message);
+        Alert.alert(
+          'Google login failed',
+          error.response?.data?.message || error.message || 'Could not log in with Google.',
+        );
+      } finally {
+        setIsGoogleLoading(false);
+      }
+      return;
+    }
+
+    if (!GOOGLE_CLIENT_ID_FOR_PLATFORM) {
+      Alert.alert(
+        'Google login is not configured',
+        `Please set ${GOOGLE_CLIENT_ID_ENV_NAME} in streaming-app-frontend/.env, then restart Expo with cache cleared.`,
+      );
+      return;
+    }
+
+    setIsGoogleLoading(true);
+    try {
+      await promptGoogleLogin();
+    } catch (error) {
+      console.log('Google prompt error:', error);
+      setIsGoogleLoading(false);
+      Alert.alert('Google login failed', 'Could not open Google login.');
+    }
+  };
 
   const handleRegister = async () => {
     const trimmedUsername = username.trim();
@@ -276,13 +393,19 @@ const RegisterScreen = () => {
               </View>
 
               <View style={styles.socialContainer}>
-                <TouchableOpacity style={styles.socialButton}>
-                  <FontAwesome name="apple" size={20} color={COLORS.whiteText} />
-                  <Text style={styles.socialButtonText}>Continue with Apple</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.socialButton}>
-                  <FontAwesome name="google" size={18} color={COLORS.whiteText} />
-                  <Text style={styles.socialButtonText}>Continue with Google</Text>
+                <TouchableOpacity
+                  style={[styles.socialButton, isGoogleLoading && { opacity: 0.7 }]}
+                  onPress={handleGoogleLogin}
+                  disabled={isGoogleLoading}
+                >
+                  {isGoogleLoading ? (
+                    <ActivityIndicator color={COLORS.whiteText} />
+                  ) : (
+                    <>
+                      <FontAwesome name="google" size={18} color={COLORS.whiteText} />
+                      <Text style={styles.socialButtonText}>Continue with Google</Text>
+                    </>
+                  )}
                 </TouchableOpacity>
               </View>
             </>

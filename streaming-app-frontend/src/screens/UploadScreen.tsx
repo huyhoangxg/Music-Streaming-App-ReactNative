@@ -161,14 +161,16 @@ const UploadScreen = () => {
         },
       });
 
-      Alert.alert('Success', 'Your song has been uploaded successfully.');
       setTitle('');
       setGenre('');
       setDescription('');
       setAudioFile(null);
       setArtwork(null);
       DeviceEventEmitter.emit('RELOAD_DATA');
-      navigation.navigate('HomeTab');
+      Alert.alert('Success', 'Your song has been uploaded successfully.', [
+        { text: 'Stay here', style: 'cancel' },
+        { text: 'Go home', onPress: () => navigation.navigate('HomeTab') },
+      ]);
     } catch (error) {
       const message = getUploadErrorMessage(error);
       console.log('Upload error:', {
@@ -201,7 +203,7 @@ const UploadScreen = () => {
           <View style={styles.iconCircle}>
             <MaterialIcons name="music-note" size={30} color={COLORS.accentOrange} />
           </View>
-          <Text style={styles.uploadBoxTitle}>
+          <Text style={styles.uploadBoxTitle} numberOfLines={2} ellipsizeMode="tail">
             {audioFile ? audioFile.name : 'Tap to select audio file'}
           </Text>
           <Text style={styles.uploadBoxSub}>MP3, WAV, FLAC up to 100 MB</Text>
@@ -381,6 +383,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     marginBottom: 5,
+    maxWidth: '90%',
+    textAlign: 'center',
+    lineHeight: 21,
   },
   uploadBoxSub: { color: COLORS.neutralLightGrey, fontSize: 13 },
   formGroup: { marginBottom: 20 },

@@ -26,32 +26,43 @@ const COLORS = {
 };
 
 interface CommentData {
-  id: string;
+  id: string | number;
   content: string;
   createdAt: string;
   user: {
+    id?: string;
     username: string;
     fullName?: string;
     avatarUrl?: string;
   };
 }
 
-const formatTimeAgo = (dateString: string) => {
+type TrackStoryTab = 'likes' | 'comments' | 'reposts';
+
+interface InteractionUserData {
+  createdAt: string;
+  user: {
+    id: string;
+    username: string;
+    fullName?: string;
+    avatarUrl?: string;
+  };
+}
+
+const formatCommentTime = (dateString: string) => {
   const date = new Date(dateString);
-  const now = new Date();
-  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-  
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo`;
-  const years = Math.floor(months / 12);
-  return `${years}y`;
+
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return date.toLocaleString(undefined, {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 };
 
 const resolveCommentAvatarUrl = (avatarUrl?: string) => {
@@ -74,14 +85,14 @@ const FullScreenPlayer = () => {
     setIsFullScreen,
   } = usePlayer();
   
-  // States quản lý UI số liệu (Cho nó mượt, không cần đợi load lại data)
+  // Local interaction state keeps the player responsive before the feed refreshes.
   const [likeCount, setLikeCount] = useState(0);
   const [isLiked, setIsLiked] = useState(false);
   const [repostCount, setRepostCount] = useState(0);
   const [isReposted, setIsReposted] = useState(false);
   const [commentCount, setCommentCount] = useState(0);
 
-  // State cho Modal Comment
+  // Comment and playlist modal state.
   const [showComments, setShowComments] = useState(false);
   const [showTrackStory, setShowTrackStory] = useState(false);
   const [showPlaylistModal, setShowPlaylistModal] = useState(false);
@@ -89,13 +100,18 @@ const FullScreenPlayer = () => {
   
   const [comments, setComments] = useState<CommentData[]>([]);
   const [isLoadingComments, setIsLoadingComments] = useState(false);
+  const [trackStoryTab, setTrackStoryTab] = useState<TrackStoryTab>('likes');
+  const [canViewTrackInsights, setCanViewTrackInsights] = useState(false);
+  const [isLoadingTrackInsights, setIsLoadingTrackInsights] = useState(false);
+  const [likedUsers, setLikedUsers] = useState<InteractionUserData[]>([]);
+  const [repostedUsers, setRepostedUsers] = useState<InteractionUserData[]>([]);
 
   useEffect(() => {
     setIsFullScreen(true);
     return () => setIsFullScreen(false);
   }, []);
 
-  // Mỗi khi đổi bài hát, cập nhật lại số liệu hiển thị + fetch trạng thái like/repost
+  // Refresh visible counts and interaction state whenever the track changes.
   useEffect(() => {
     if (currentTrack) {
       setLikeCount(currentTrack.likeCount || 0);
@@ -104,12 +120,15 @@ const FullScreenPlayer = () => {
       setShowTrackStory(false);
       setShowPlaylistModal(false);
       setComments([]);
+      setTrackStoryTab('likes');
+      setCanViewTrackInsights(false);
+      setLikedUsers([]);
+      setRepostedUsers([]);
       
       if (showComments) {
         fetchComments();
       }
       
-      // Fetch trạng thái like/repost thực tế từ server
       fetchInteractionStatus(currentTrack.id);
     }
   }, [currentTrack]);
@@ -143,10 +162,53 @@ const FullScreenPlayer = () => {
       const res = await axios.get(`${API_URL}/api/interactions/${currentTrack.id}/comment`);
       setComments(res.data);
     } catch (error) {
-      console.log('Lỗi fetch comments:', error);
+      console.log('Failed to fetch comments:', error);
     } finally {
       setIsLoadingComments(false);
     }
+  };
+
+  const fetchTrackInsights = async () => {
+    if (!currentTrack) return;
+
+    try {
+      const token = await SecureStore.getItemAsync('userToken');
+      if (!token) {
+        setCanViewTrackInsights(false);
+        return;
+      }
+
+      setIsLoadingTrackInsights(true);
+      const headers = { Authorization: `Bearer ${token}` };
+      const [likesRes, repostsRes, commentsRes] = await Promise.all([
+        axios.get(`${API_URL}/api/interactions/${currentTrack.id}/likes`, { headers }),
+        axios.get(`${API_URL}/api/interactions/${currentTrack.id}/reposts`, { headers }),
+        axios.get(`${API_URL}/api/interactions/${currentTrack.id}/comment`),
+      ]);
+
+      setLikedUsers(Array.isArray(likesRes.data) ? likesRes.data : []);
+      setRepostedUsers(Array.isArray(repostsRes.data) ? repostsRes.data : []);
+      setComments(Array.isArray(commentsRes.data) ? commentsRes.data : []);
+      setCanViewTrackInsights(true);
+    } catch (error: any) {
+      const status = error?.response?.status;
+      if (status !== 403 && status !== 404) {
+        console.log('Failed to fetch track insights:', error);
+      }
+      setCanViewTrackInsights(false);
+      setTrackStoryTab('likes');
+    } finally {
+      setIsLoadingTrackInsights(false);
+    }
+  };
+
+  const openTrackStory = () => {
+    setTrackStoryTab('likes');
+    setCanViewTrackInsights(false);
+    setLikedUsers([]);
+    setRepostedUsers([]);
+    setShowTrackStory(true);
+    void fetchTrackInsights();
   };
 
   const handleLike = async () => {
@@ -166,7 +228,7 @@ const FullScreenPlayer = () => {
       
       DeviceEventEmitter.emit('RELOAD_DATA');
     } catch (error) {
-      console.log('Lỗi thả tim:', error);
+      console.log('Failed to toggle like:', error);
     }
   };
 
@@ -185,7 +247,7 @@ const FullScreenPlayer = () => {
       setComments(prev => [res.data.comment, ...prev]);
       DeviceEventEmitter.emit('RELOAD_DATA');
     } catch (error) {
-      console.log('Lỗi gửi comment:', error);
+      console.log('Failed to send comment:', error);
     }
   };
 
@@ -206,7 +268,7 @@ const FullScreenPlayer = () => {
       
       DeviceEventEmitter.emit('RELOAD_DATA');
     } catch (error) {
-      console.log('Lỗi đăng lại:', error);
+      console.log('Failed to toggle repost:', error);
     }
   };
 
@@ -224,6 +286,146 @@ const FullScreenPlayer = () => {
     typeof currentTrack.description === 'string' && currentTrack.description.trim()
       ? currentTrack.description.trim()
       : 'No description provided.';
+
+  const renderCommentItem = ({ item }: { item: CommentData }) => (
+    <View style={styles.commentItem}>
+      <Image
+        source={{ uri: resolveCommentAvatarUrl(item.user.avatarUrl) }}
+        style={styles.commentAvatar}
+      />
+      <View style={styles.commentContent}>
+        <View style={styles.commentHeaderRow}>
+          <Text style={styles.commentAuthor}>{item.user.fullName || item.user.username}</Text>
+          <Text style={styles.commentTime}>{formatCommentTime(item.createdAt)}</Text>
+        </View>
+        <Text style={styles.commentText}>{item.content}</Text>
+      </View>
+    </View>
+  );
+
+  const renderCommentsContent = (contentStyle: any) => {
+    if (isLoadingComments) {
+      return <ActivityIndicator style={{ flex: 1 }} color={COLORS.accentOrange} />;
+    }
+
+    if (comments.length === 0) {
+      return (
+        <View style={styles.commentListEmpty}>
+          <Ionicons name="chatbubbles-outline" size={40} color={COLORS.neutralLightGrey} />
+          <Text style={styles.emptyCommentText}>Be the first to comment!</Text>
+        </View>
+      );
+    }
+
+    return (
+      <FlatList
+        data={comments}
+        keyExtractor={(item) => String(item.id)}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={contentStyle}
+        renderItem={renderCommentItem}
+      />
+    );
+  };
+
+  const renderCommentComposer = () => (
+    <View style={styles.commentInputRow}>
+      <TextInput
+        style={styles.commentInput}
+        placeholder="Write a comment..."
+        placeholderTextColor={COLORS.neutralLightGrey}
+        value={newComment}
+        onChangeText={setNewComment}
+      />
+      <TouchableOpacity style={styles.sendButton} disabled={newComment.trim().length === 0} onPress={handleSendComment}>
+        <Ionicons
+          name="send"
+          size={20}
+          color={newComment.trim().length > 0 ? COLORS.accentOrange : COLORS.neutralLightGrey}
+        />
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderInteractionUserRow = ({ item }: { item: InteractionUserData }) => (
+    <View style={styles.insightUserItem}>
+      <Image
+        source={{ uri: resolveCommentAvatarUrl(item.user.avatarUrl) }}
+        style={styles.insightUserAvatar}
+      />
+      <View style={styles.insightUserTextBlock}>
+        <Text style={styles.insightUserName} numberOfLines={1}>
+          {item.user.fullName || item.user.username}
+        </Text>
+        <Text style={styles.insightUserUsername} numberOfLines={1}>
+          @{item.user.username}
+        </Text>
+      </View>
+      <Text style={styles.insightTime}>{formatCommentTime(item.createdAt)}</Text>
+    </View>
+  );
+
+  const renderInteractionUserList = (
+    data: InteractionUserData[],
+    emptyText: string,
+    iconName: keyof typeof Ionicons.glyphMap,
+  ) => {
+    if (isLoadingTrackInsights) {
+      return <ActivityIndicator style={{ flex: 1 }} color={COLORS.accentOrange} />;
+    }
+
+    if (data.length === 0) {
+      return (
+        <View style={styles.commentListEmpty}>
+          <Ionicons name={iconName} size={40} color={COLORS.neutralLightGrey} />
+          <Text style={styles.emptyCommentText}>{emptyText}</Text>
+        </View>
+      );
+    }
+
+    return (
+      <FlatList
+        data={data}
+        keyExtractor={(item, index) => `${item.user.id}-${item.createdAt}-${index}`}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.trackStoryListBody}
+        renderItem={renderInteractionUserRow}
+      />
+    );
+  };
+
+  const renderTrackStoryContent = () => {
+    if (!canViewTrackInsights) {
+      return (
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.trackStoryBody}>
+          <Text style={styles.trackStoryText}>{trackDescription}</Text>
+        </ScrollView>
+      );
+    }
+
+    if (trackStoryTab === 'likes') {
+      return renderInteractionUserList(likedUsers, 'No likes yet.', 'heart-outline');
+    }
+
+    if (trackStoryTab === 'reposts') {
+      return renderInteractionUserList(repostedUsers, 'No reposts yet.', 'repeat-outline');
+    }
+
+    return (
+      <View style={styles.trackStoryCommentsPanel}>
+        <View style={styles.trackStoryCommentsBody}>
+          {renderCommentsContent(styles.trackStoryCommentsList)}
+        </View>
+        {renderCommentComposer()}
+      </View>
+    );
+  };
+
+  const trackStoryTabs: { key: TrackStoryTab; label: string }[] = [
+    { key: 'likes', label: 'Likes' },
+    { key: 'comments', label: 'Comments' },
+    { key: 'reposts', label: 'Reposts' },
+  ];
 
   return (
     <ImageBackground 
@@ -247,7 +449,7 @@ const FullScreenPlayer = () => {
           <TouchableOpacity
             style={styles.trackStoryTrigger}
             activeOpacity={0.8}
-            onPress={() => setShowTrackStory(true)}
+            onPress={openTrackStory}
           >
             <Text style={styles.trackStoryTriggerText}>Behind this track</Text>
           </TouchableOpacity>
@@ -284,7 +486,7 @@ const FullScreenPlayer = () => {
           </View>
 
           <View style={styles.actionsRow}>
-            {/* NÚT TIM */}
+            {/* Like */}
             <TouchableOpacity style={styles.actionBtn} onPress={handleLike}>
               <Ionicons 
                 name={isLiked ? "heart" : "heart-outline"} 
@@ -296,13 +498,13 @@ const FullScreenPlayer = () => {
               </Text>
             </TouchableOpacity>
 
-            {/* NÚT COMMENT MỞ MODAL */}
+            {/* Comments */}
             <TouchableOpacity style={styles.actionBtn} onPress={() => setShowComments(true)}>
               <Ionicons name="chatbubble-outline" size={26} color={COLORS.whiteText} />
               <Text style={styles.actionText}>{commentCount}</Text>
             </TouchableOpacity>
 
-            {/* NÚT REPOST */}
+            {/* Repost */}
             <TouchableOpacity style={styles.actionBtn} onPress={handleRepost}>
               <Feather 
                 name="repeat" 
@@ -314,7 +516,7 @@ const FullScreenPlayer = () => {
               </Text>
             </TouchableOpacity>
 
-            {/* NÚT THÊM PLAYLIST */}
+            {/* Add to playlist */}
             <TouchableOpacity style={styles.actionBtn} onPress={() => setShowPlaylistModal(true)}>
               <MaterialIcons name="playlist-add" size={30} color={COLORS.whiteText} />
               <Text style={styles.actionText}></Text>
@@ -324,7 +526,7 @@ const FullScreenPlayer = () => {
         </View>
       </SafeAreaView>
 
-      {/* ================= MODAL COMMENT ================= */}
+      {/* Comments modal */}
       <Modal visible={showComments} animationType="slide" transparent={true}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalContainer}>
           <View style={styles.commentSheet}>
@@ -336,53 +538,11 @@ const FullScreenPlayer = () => {
               </TouchableOpacity>
             </View>
 
-            {isLoadingComments ? (
-              <ActivityIndicator style={{ flex: 1 }} color={COLORS.accentOrange} />
-            ) : comments.length === 0 ? (
-              <View style={styles.commentListEmpty}>
-                <Ionicons name="chatbubbles-outline" size={40} color={COLORS.neutralLightGrey} />
-                <Text style={styles.emptyCommentText}>Be the first to comment!</Text>
-              </View>
-            ) : (
-              <FlatList
-                data={comments}
-                keyExtractor={(item) => item.id}
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ padding: 15 }}
-                renderItem={({ item }) => (
-                  <View style={styles.commentItem}>
-                    <Image
-                      source={{ uri: resolveCommentAvatarUrl(item.user.avatarUrl) }}
-                      style={styles.commentAvatar}
-                    />
-                    <View style={styles.commentContent}>
-                      <View style={styles.commentHeaderRow}>
-                        <Text style={styles.commentAuthor}>{item.user.fullName || item.user.username}</Text>
-                        <Text style={styles.commentTime}>{formatTimeAgo(item.createdAt)}</Text>
-                      </View>
-                      <Text style={styles.commentText}>{item.content}</Text>
-                    </View>
-                  </View>
-                )}
-              />
-            )}
-
-            <View style={styles.commentInputRow}>
-              <TextInput 
-                style={styles.commentInput}
-                placeholder="Write a comment..."
-                placeholderTextColor={COLORS.neutralLightGrey}
-                value={newComment}
-                onChangeText={setNewComment}
-              />
-              <TouchableOpacity style={styles.sendButton} disabled={newComment.trim().length === 0} onPress={handleSendComment}>
-                <Ionicons 
-                  name="send" 
-                  size={20} 
-                  color={newComment.trim().length > 0 ? COLORS.accentOrange : COLORS.neutralLightGrey} 
-                />
-              </TouchableOpacity>
+            <View style={styles.commentsBody}>
+              {renderCommentsContent(styles.commentListBody)}
             </View>
+
+            {renderCommentComposer()}
 
           </View>
         </KeyboardAvoidingView>
@@ -390,20 +550,52 @@ const FullScreenPlayer = () => {
 
       <Modal visible={showTrackStory} animationType="slide" transparent={true}>
         <Pressable style={styles.trackStoryOverlay} onPress={() => setShowTrackStory(false)}>
-          <Pressable style={styles.trackStorySheet} onPress={(event) => event.stopPropagation()}>
+          <Pressable
+            style={[styles.trackStorySheet, canViewTrackInsights && styles.trackStorySheetExpanded]}
+            onPress={(event) => event.stopPropagation()}
+          >
             <View style={styles.trackStoryHeader}>
               <View style={styles.trackStoryTitleRow}>
                 <Ionicons name="document-text-outline" size={20} color={COLORS.accentOrange} />
                 <Text style={styles.trackStoryTitle}>Behind this track</Text>
               </View>
+              {isLoadingTrackInsights && !canViewTrackInsights ? (
+                <ActivityIndicator size="small" color={COLORS.accentOrange} />
+              ) : null}
               <TouchableOpacity onPress={() => setShowTrackStory(false)} style={{ padding: 5 }}>
                 <MaterialIcons name="close" size={24} color={COLORS.whiteText} />
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.trackStoryBody}>
-              <Text style={styles.trackStoryText}>{trackDescription}</Text>
-            </ScrollView>
+            {canViewTrackInsights ? (
+              <>
+                <View style={styles.trackStoryDescriptionBlock}>
+                  <ScrollView nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                    <Text style={styles.trackStoryText}>{trackDescription}</Text>
+                  </ScrollView>
+                </View>
+
+                <View style={styles.trackStoryTabs}>
+                  {trackStoryTabs.map((tab) => {
+                    const isActive = trackStoryTab === tab.key;
+                    return (
+                      <TouchableOpacity
+                        key={tab.key}
+                        style={[styles.trackStoryTab, isActive && styles.trackStoryTabActive]}
+                        onPress={() => setTrackStoryTab(tab.key)}
+                        activeOpacity={0.86}
+                      >
+                        <Text style={[styles.trackStoryTabText, isActive && styles.trackStoryTabTextActive]}>
+                          {tab.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </>
+            ) : null}
+
+            {renderTrackStoryContent()}
           </Pressable>
         </Pressable>
       </Modal>
@@ -447,11 +639,13 @@ const styles = StyleSheet.create({
   actionBtn: { alignItems: 'center', minWidth: 50 },
   actionText: { color: COLORS.whiteText, fontSize: 13, marginTop: 4, fontWeight: '600' },
 
-  // Styles cho Modal Comment
+  // Comment modal styles
   modalContainer: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
   commentSheet: { backgroundColor: COLORS.neutralDarkGrey, borderTopLeftRadius: 20, borderTopRightRadius: 20, height: '70%', paddingBottom: 20 },
   commentHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: COLORS.borderColor },
   commentTitle: { color: COLORS.whiteText, fontSize: 18, fontWeight: 'bold' },
+  commentsBody: { flex: 1 },
+  commentListBody: { padding: 15 },
   commentListEmpty: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyCommentText: { color: COLORS.neutralLightGrey, marginTop: 10, fontSize: 15 },
   commentItem: { flexDirection: 'row', marginBottom: 20 },
@@ -468,10 +662,27 @@ const styles = StyleSheet.create({
 
   trackStoryOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.62)' },
   trackStorySheet: { backgroundColor: COLORS.neutralDarkGrey, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '58%', paddingBottom: 26 },
+  trackStorySheetExpanded: { height: '78%', maxHeight: '78%', paddingBottom: 18 },
   trackStoryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: COLORS.borderColor },
   trackStoryTitle: { color: COLORS.whiteText, fontSize: 18, fontWeight: 'bold' },
+  trackStoryDescriptionBlock: { maxHeight: 132, paddingHorizontal: 20, paddingTop: 14, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: COLORS.borderColor },
+  trackStoryTabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.borderColor },
+  trackStoryTab: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 36, borderRadius: 8, backgroundColor: '#242424', paddingHorizontal: 6 },
+  trackStoryTabActive: { backgroundColor: COLORS.accentOrange },
+  trackStoryTabText: { color: COLORS.neutralLightGrey, fontSize: 12, fontWeight: '700' },
+  trackStoryTabTextActive: { color: COLORS.whiteText },
   trackStoryBody: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 8 },
-  trackStoryText: { color: COLORS.whiteText, fontSize: 15, lineHeight: 23 }
+  trackStoryText: { color: COLORS.whiteText, fontSize: 15, lineHeight: 23 },
+  trackStoryListBody: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 18 },
+  insightUserItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.borderColor },
+  insightUserAvatar: { width: 42, height: 42, borderRadius: 21, marginRight: 12, backgroundColor: '#333' },
+  insightUserTextBlock: { flex: 1, minWidth: 0 },
+  insightUserName: { color: COLORS.whiteText, fontSize: 15, fontWeight: '700' },
+  insightUserUsername: { color: COLORS.neutralLightGrey, fontSize: 13, marginTop: 2 },
+  insightTime: { color: '#888', fontSize: 11, marginLeft: 8, maxWidth: 92, textAlign: 'right' },
+  trackStoryCommentsPanel: { flex: 1 },
+  trackStoryCommentsBody: { flex: 1 },
+  trackStoryCommentsList: { paddingHorizontal: 15, paddingTop: 15, paddingBottom: 8 }
 });
 
 export default FullScreenPlayer;

@@ -4,6 +4,5 @@ pydantic-settings==2.9.1
 python-dotenv==1.1.0
 numpy==2.2.5
 scikit-learn==1.6.1
-h5py==3.16.0
 # Install in Linux/WSL/Docker. Windows native Python bindings are not officially supported.
 essentia-tensorflow

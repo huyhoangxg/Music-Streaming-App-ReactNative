@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     audio_fetch_max_bytes: int = 25_000_000
     audio_sample_rate: int = 16000
     audio_resample_quality: int = 4
+    audio_analysis_max_seconds: int = 180
+    genre_inference_timeout_seconds: int = 180
     genre_top_k: int = 3
     genre_score_threshold: float = 0.15
     genre_confidence_threshold: float = 0.50
@@ -47,10 +49,6 @@ class Settings(BaseSettings):
     essentia_classifier_metadata_path: str = Field(
         default="./models/mtg_jamendo_genre-discogs-effnet-1.json",
         validation_alias=AliasChoices("GENRE_METADATA_PATH", "ESSENTIA_CLASSIFIER_METADATA_PATH"),
-    )
-    genre_classifier_backend: str = Field(
-        default="essentia",
-        validation_alias=AliasChoices("GENRE_CLASSIFIER_BACKEND", "CLASSIFIER_BACKEND"),
     )
     essentia_suppress_network_warnings: bool = True
 

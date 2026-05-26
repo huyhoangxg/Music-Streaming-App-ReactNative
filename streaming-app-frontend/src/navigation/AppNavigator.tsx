@@ -15,8 +15,8 @@ import UserProfileScreen from '../screens/UserProfileScreen';
 import PlaylistDetailScreen from '../screens/PlaylistDetailScreen';
 import NotificationsScreen from '../screens/NotificationsScreen';
 import NotificationSettingsScreen from '../screens/NotificationSettingsScreen';
-import AudioQualityScreen from '../screens/AudioQualityScreen';
 import ChangePasswordScreen from '../screens/ChangePasswordScreen';
+import ForgotPasswordScreen from '../screens/ForgotPasswordScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -68,8 +68,8 @@ export default function AppNavigator() {
               options={{ animation: 'slide_from_right' }} 
           />
           <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="AudioQuality" component={AudioQualityScreen} options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} options={{ animation: 'slide_from_right' }} />
         </Stack.Navigator>
 
       </NavigationContainer>

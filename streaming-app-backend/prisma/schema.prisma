@@ -25,6 +25,9 @@ model User {
   emailVerificationCodeHash   String?
   emailVerificationExpiresAt  DateTime?
   emailVerificationLastSentAt DateTime?
+  passwordResetCodeHash       String?
+  passwordResetExpiresAt      DateTime?
+  passwordResetLastSentAt     DateTime?
   comments                    Comment[]
   followers                   Follow[]              @relation("UserFollowers")
   following                   Follow[]              @relation("UserFollowing")

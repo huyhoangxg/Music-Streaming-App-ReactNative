@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+import gc
 import logging
 import threading
 import time
@@ -8,7 +9,6 @@ import numpy as np
 
 from app.core.config import settings
 from app.core.model_registry import model_registry
-from app.utils.native_stderr import filter_native_stderr_lines
 
 try:
     from essentia.standard import (  # type: ignore
@@ -35,8 +35,6 @@ class RawGenreInferenceResult:
 
 class GenreInferenceService:
     def __init__(self) -> None:
-        self._embedding_model = None
-        self._classifier_model = None
         self._inference_lock = threading.Lock()
 
     def infer(self, local_audio_path: str | Path) -> RawGenreInferenceResult:
@@ -44,30 +42,28 @@ class GenreInferenceService:
 
         with self._inference_lock:
             started_at = time.perf_counter()
-            warning_patterns = (
-                ["No network created, or last created network has been deleted"]
-                if settings.essentia_suppress_network_warnings
-                else []
-            )
+            bundle = model_registry.get_genre_model_bundle()
+            embedding_model = self._build_embedding_model(bundle)
+            classifier_model = self._build_classifier_model(bundle)
 
-            with filter_native_stderr_lines(warning_patterns):
-                bundle = model_registry.get_genre_model_bundle()
-                logger.info("Genre inference step: load_audio path=%s", local_audio_path)
+            logger.info("Genre inference step: load_audio path=%s", local_audio_path)
+            try:
                 audio = self.load_audio(local_audio_path)
                 logger.info(
                     "Genre inference step: extract_embeddings samples=%s",
                     audio.shape[0],
                 )
-                embeddings = self.extract_embeddings(audio, bundle)
+                embeddings = self.extract_embeddings(audio, embedding_model)
                 logger.info(
                     "Genre inference step: predict_genres embeddings=%s",
                     embeddings.shape,
                 )
-                predictions = self.predict_genres(embeddings, bundle)
+                predictions = self.predict_genres(embeddings, classifier_model)
                 clip_scores = self._collapse_predictions(
                     predictions,
                     expected_size=len(bundle.class_labels),
                 )
+
                 logger.info(
                     "Genre inference complete: labels=%s elapsed=%.2fs",
                     len(bundle.class_labels),
@@ -76,9 +72,13 @@ class GenreInferenceService:
 
                 return RawGenreInferenceResult(
                     scores=clip_scores.tolist(),
-                    labels=bundle.class_labels,
+                    labels=list(bundle.class_labels),
                     model_version=bundle.model_version,
                 )
+            finally:
+                del embedding_model
+                del classifier_model
+                gc.collect()
 
     def _build_audio_loader(self, local_audio_path: str | Path):
         return MonoLoader(
@@ -94,25 +94,30 @@ class GenreInferenceService:
         if audio_array.size == 0:
             raise ValueError(f"Audio loader returned an empty waveform for {local_audio_path}.")
 
+        max_samples = settings.audio_sample_rate * settings.audio_analysis_max_seconds
+        if max_samples > 0 and audio_array.size > max_samples:
+            logger.info(
+                "Genre inference step: trim_audio samples=%s maxSamples=%s",
+                audio_array.size,
+                max_samples,
+            )
+            audio_array = audio_array[:max_samples]
+
         return audio_array
 
-    def extract_embeddings(self, audio: np.ndarray, bundle) -> np.ndarray:
-        embeddings = self._build_embedding_model(bundle)(audio)
-        embeddings_array = np.asarray(embeddings, dtype=float)
+    def extract_embeddings(self, audio: np.ndarray, embedding_model) -> np.ndarray:
+        embeddings = embedding_model(audio)
+        embeddings_array = np.asarray(embeddings, dtype=np.float32)
 
         if embeddings_array.size == 0:
             raise ValueError("Embedding model returned an empty tensor.")
 
         return embeddings_array
 
-    def predict_genres(self, embeddings: np.ndarray, bundle) -> np.ndarray:
-        classifier_model = self._get_classifier_model(bundle)
-        if settings.genre_classifier_backend.lower() == "keras":
-            predictions = classifier_model.predict(embeddings, verbose=0)
-        else:
-            predictions = classifier_model(embeddings)
+    def predict_genres(self, embeddings: np.ndarray, classifier_model) -> np.ndarray:
+        predictions = classifier_model(embeddings)
 
-        predictions_array = np.asarray(predictions, dtype=float)
+        predictions_array = np.asarray(predictions, dtype=np.float32)
 
         if predictions_array.size == 0:
             raise ValueError("Genre classifier returned an empty predictions tensor.")
@@ -146,23 +151,10 @@ class GenreInferenceService:
             output=settings.essentia_embedding_output_layer,
         )
 
-    def _get_classifier_model(self, bundle):
-        if self._classifier_model is None:
-            classifier_backend = settings.genre_classifier_backend.lower()
-            if classifier_backend == "keras":
-                from app.services.keras_numpy_classifier import KerasNumpyClassifier
-
-                self._classifier_model = KerasNumpyClassifier.load(bundle.classifier_graph_path)
-            elif classifier_backend == "essentia":
-                self._classifier_model = TensorflowPredict2D(
-                    graphFilename=str(bundle.classifier_graph_path),
-                )
-            else:
-                raise RuntimeError(
-                    "Unsupported GENRE_CLASSIFIER_BACKEND. Use 'essentia' or 'keras'."
-                )
-
-        return self._classifier_model
+    def _build_classifier_model(self, bundle):
+        return TensorflowPredict2D(
+            graphFilename=str(bundle.classifier_graph_path),
+        )
 
     def _collapse_predictions(self, predictions: np.ndarray, expected_size: int) -> np.ndarray:
         predictions_array = np.asarray(predictions, dtype=float)
